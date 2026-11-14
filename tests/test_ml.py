@@ -62,7 +62,7 @@ def test_features_have_no_future_and_label_window(tmp_db):
     pos = np.array([0, 1])
     di = np.array([60, 60])
     X = features.build(d, pos, di)
-    assert X.shape == (2, len(features.FEATURES))
+    assert X.shape == (2, len(features.FEATURES_ALL))
     # changing a later day must not change today's features
     d.B[d.cand[0], 100] = 99
     assert np.allclose(features.build(d, pos, di), X, equal_nan=True)
@@ -146,3 +146,31 @@ def test_soil_tile_renders(tmp_db):
         r = client.get("/api/soil/tiles/5/17/10.png")
         assert r.status_code == 200 and r.content[:4] == b"\x89PNG"
         assert client.get("/api/soil/tiles/3/0/0.png", params={"cls": 99}).status_code == 422
+
+
+def test_dryness_features():
+    from server.ml import dryness
+    days = 50
+    prec = np.zeros((1, days)); prec[0, 10] = 5.0
+    out = dryness.dryness(np.full((1, days), 20.0), np.full((1, days), 50.0), prec, np.zeros(days, int))
+    assert out["dry_days"][0, 10] == 0 and out["dry_days"][0, 15] == 5
+    assert out["prec30"][0, 20] == 5.0 and out["prec30"][0, 45] == 0.0
+    assert 0 < out["vpd"][0, 0] < 3 and abs(out["t2m_anom"][0, 0]) < 1e-6
+    assert set(out) == set(dryness.DERIVED)          # no fire-danger index among the features
+
+
+def test_weather_features_flow_into_matrix(tmp_db):
+    _fill_bins()
+    d0 = dt.date(2025, 9, 1)
+    rows = [(40, 190, (d0 + dt.timedelta(days=i)).isoformat(), 15.0 + i % 7, 60.0, 3.0,
+             0.0 if i % 5 else 4.0, 0.3, 0.4, 0.5) for i in range(170)]
+    with db.session() as con:
+        con.executemany("INSERT INTO weather_grid VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+    d = features.load(TRAIN_END)
+    X = features.build(d, np.array([0]), np.array([60]))
+    col = dict(zip(features.FEATURES_ALL, X[0]))
+    assert np.isfinite(col["vpd"]) and np.isfinite(col["dry_days"]) and col["dry_days"] <= 60
+    assert not any("fwi" in n or "ffmc" in n for n in features.FEATURES_ALL)
+    assert len([f for f in features.FEATURES if f in features.WEATHER_ACTIVE]) == 6
+    assert features.select(X, features.FEATURES).shape[1] == len(features.FEATURES)
+    assert features.select(X, features.FEATURES_V1).shape[1] == len(features.FEATURES_V1)

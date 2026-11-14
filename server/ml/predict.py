@@ -56,6 +56,7 @@ def forecast(date: str) -> dict | None:
         if d is None:
             return None
         pos, di, X = features.predict_rows(d, date)
+        X = features.select(X, p.get("features"))
         prob = train.calibrate(_model(run).predict(X), p["neg_keep"]) if len(pos) else np.zeros(0)
         day = int(di[0]) if len(di) else min(max(d.day_index(date), 0), d.n_days - 1)
         lab = features.label_mask(d, p["horizon"])[:, day] if day + p["horizon"] < d.n_days else None

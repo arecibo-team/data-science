@@ -38,7 +38,8 @@ def calibrate(p: np.ndarray, neg_keep: float = NEG_KEEP) -> np.ndarray:
 
 
 def create_run(params: dict) -> int:
-    p = {**DEFAULTS, "horizon": settings.HORIZON, "train_end": settings.TRAIN_END, "neg_keep": NEG_KEEP, "label": settings.LABEL, **params}
+    p = {**DEFAULTS, "horizon": settings.HORIZON, "train_end": settings.TRAIN_END, "neg_keep": NEG_KEEP, "label": settings.LABEL, "early_stopping": 40,
+         "features": features.FEATURES, **params}
     with db.session() as con:
         cur = con.execute("INSERT INTO model_runs (status, params, started_at, rounds_total) VALUES ('running', ?, ?, ?)",
                           (json.dumps(p), now(), int(p["rounds"])))
@@ -96,6 +97,7 @@ def _save_checkpoint(run_id: int, rnd: int, booster, tr, va, final=False) -> Non
 def train(run_id: int, emit: Callable[[dict], None], stop: threading.Event, resume: bool = False) -> None:
     run = get_run(run_id)
     p = run["params"]
+    p["features"] = p.get("features") or features.FEATURES_V1   # runs from before the derived weather features
     horizon, history = p["horizon"], run["loss_history"] if resume else []
     try:
         emit({"type": "start", "run": run_id, "total": run["rounds_total"], "resumed": resume})
@@ -104,9 +106,10 @@ def train(run_id: int, emit: Callable[[dict], None], stop: threading.Event, resu
             raise RuntimeError("no common-fire data to train on; run the pipeline first")
         Xt, yt, _ = features.training_rows(data, horizon, "train", p["neg_keep"])
         Xv, yv, _ = features.training_rows(data, horizon, "val", p["neg_keep"])
+        Xt, Xv = features.select(Xt, p["features"]), features.select(Xv, p["features"])
         if len(yt) == 0 or yt.sum() == 0:
             raise RuntimeError("no training rows with positives")
-        dt_ = lgb.Dataset(Xt, yt, feature_name=features.FEATURES, free_raw_data=False)
+        dt_ = lgb.Dataset(Xt, yt, feature_name=p["features"], free_raw_data=False)
         dv = lgb.Dataset(Xv, yv, reference=dt_)
         init, done = None, 0
         if resume:
@@ -140,7 +143,7 @@ def train(run_id: int, emit: Callable[[dict], None], stop: threading.Event, resu
                   "feature_fraction": 0.9, "bagging_fraction": 0.8, "bagging_freq": 1, "verbose": -1, "seed": 0}
         try:
             booster = lgb.train(params, dt_, num_boost_round=remaining, valid_sets=[dt_, dv],
-                                valid_names=["train", "val"], init_model=init, callbacks=[cb])
+                                valid_names=["train", "val"], init_model=init, callbacks=[cb, *([lgb.early_stopping(p["early_stopping"], verbose=False)] if p.get("early_stopping") else [])])
         except Stopped:
             with db.session() as con:
                 con.execute("UPDATE model_runs SET status='stopped', message='stopped by user' WHERE id=?", (run_id,))
@@ -163,12 +166,13 @@ def train(run_id: int, emit: Callable[[dict], None], stop: threading.Event, resu
         emit({"type": "error", "run": run_id, "message": str(exc)})
 
 
-def evaluate(booster, data, p: dict, Xv, yv) -> dict:
+def evaluate(booster, data, p: dict, Xv, yv) -> dict:  # Xv is already the run's own columns
     """Score on the held-out days (after train_end), at the threshold that maximises F1 on the validation rows."""
     pv = calibrate(booster.predict(Xv), p["neg_keep"])
     thr = best_threshold(pv, yv, base=None)
     out = {"threshold": float(thr), "horizon": p["horizon"], "label": p.get("label"), "train_end": p["train_end"]}
     Xs, ys, _ = features.training_rows(data, p["horizon"], "test")
+    Xs = features.select(Xs, p.get("features"))
     out["test_rows"] = int(len(ys))
     if len(ys) and ys.sum() > 0:
         ps = calibrate(booster.predict(Xs), p["neg_keep"])

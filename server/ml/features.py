@@ -14,16 +14,22 @@ import numpy as np
 import pandas as pd
 
 from .. import context, db
+from . import dryness as dry
 
 KEY = 100_000
 MIN_DAY = 30          # first usable day index, so the 30 day windows are full
 ACTIVE_DAYS = 90
 SOIL_COLS = ["sand", "rock", "sparse", "burnt", "glacier", "intertidal", "quarry", "dump", "construction"]
 WEATHER_COLS = ["t2m", "rh", "ws", "prec", "gwettop", "gwetroot", "gwetprof"]
-FEATURES = (
+FEATURES_V1 = (  # what runs trained before the lean weather set used
     ["b0", "hi0", "mv0", "b3", "b7", "b30", "c7", "c30", "mv7", "mv30", "hi7", "lo7", "nb7", "since_b",
      "doy_sin", "doy_cos", "lat", "lon"]
     + SOIL_COLS + WEATHER_COLS + ["prec7", "t2m7"])
+# build() computes every column; a run trains on its own list. The active list has one weather feature per driver:
+# 30-day rain, days since rain, vapor pressure deficit, root-zone soil wetness, temperature anomaly, wind.
+WEATHER_ACTIVE = ["prec30", "dry_days", "vpd", "gwetroot", "t2m_anom", "ws"]
+FEATURES_ALL = FEATURES_V1 + dry.DERIVED
+FEATURES = [f for f in FEATURES_V1 if f not in WEATHER_COLS and f not in ("prec7", "t2m7")] + WEATHER_ACTIVE
 NEIGHBOURS = [(dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != (0, 0)]
 
 
@@ -111,6 +117,8 @@ def load(train_end: str, con=None, label: str = "confirmed") -> Data | None:
             a = np.full((len(wkeys), t), np.nan, np.float32)
             a[winv[ok], wday[ok]] = wg[col].to_numpy(np.float32)[ok]
             W[col] = pd.DataFrame(a.T).ffill().to_numpy().T.astype(np.float32)  # carry the last known day forward
+        months = ((pd.Timestamp(start) + pd.to_timedelta(np.arange(t), unit="D")).month.to_numpy() - 1)
+        W.update(dry.dryness(W["t2m"], W["rh"], W["prec"], months))
         ck = (r // 10) * KEY + (c // 10)
         pos = np.minimum(np.searchsorted(wkeys, ck), len(wkeys) - 1)
         wi = np.where(wkeys[pos] == ck, pos, -1)
@@ -148,7 +156,7 @@ def label_mask(d: Data, horizon: int) -> np.ndarray:
 
 
 def build(d: Data, pos: np.ndarray, di: np.ndarray) -> np.ndarray:
-    """Feature matrix (len(pos), len(FEATURES)) for candidate positions `pos` on day indices `di`."""
+    """Feature matrix (len(pos), len(FEATURES_ALL)); use select() for a run's own list for candidate positions `pos` on day indices `di`."""
     rows = d.cand[pos]
     cols: dict[str, np.ndarray] = {}
     cb, cm_, ch, cl, cc = _cum(d.B), _cum(d.MV), _cum(d.HI), _cum(d.LO), _cum(d.C)
@@ -171,7 +179,7 @@ def build(d: Data, pos: np.ndarray, di: np.ndarray) -> np.ndarray:
         cols[name] = d.static[pos, 2 + j]
     w_ok = d.wi[pos] >= 0
     wrow = np.where(w_ok, d.wi[pos], 0)
-    for name in WEATHER_COLS:
+    for name in WEATHER_COLS + dry.DERIVED:
         a = d.W.get(name)
         cols[name] = np.where(w_ok, a[wrow, di], np.nan) if a is not None else np.full(len(pos), np.nan)
     for name, src, agg in (("prec7", "prec", "sum"), ("t2m7", "t2m", "mean")):
@@ -184,7 +192,13 @@ def build(d: Data, pos: np.ndarray, di: np.ndarray) -> np.ndarray:
         lo = np.maximum(di + 1 - 7, 0)
         s = cs[wrow, di + 1] - cs[wrow, lo]
         cols[name] = np.where(w_ok, s if agg == "sum" else s / (di + 1 - lo), np.nan)
-    return np.column_stack([np.asarray(cols[f], np.float32) for f in FEATURES])
+    return np.column_stack([np.asarray(cols[f], np.float32) for f in FEATURES_ALL])
+
+
+def select(X: np.ndarray, names: list[str] | None) -> np.ndarray:
+    """Columns of a build() matrix for a run's own feature list (older runs used fewer features)."""
+    names = names or FEATURES_V1
+    return X[:, [FEATURES_ALL.index(n) for n in names]]
 
 
 def training_rows(d: Data, horizon: int, split: str, neg_keep: float = 0.1, seed: int = 0):
