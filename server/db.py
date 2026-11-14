@@ -108,6 +108,13 @@ CREATE INDEX IF NOT EXISTS ix_soil_sq ON soil_squares(lat, lon);
 CREATE TABLE IF NOT EXISTS weather_grid (
     r1 INTEGER NOT NULL, c1 INTEGER NOT NULL, date TEXT NOT NULL,
     t2m REAL, rh REAL, ws REAL, prec REAL, gwettop REAL, gwetroot REAL, gwetprof REAL,
+    t2mx REAL, wsx REAL,
+    PRIMARY KEY (r1, c1, date)
+) WITHOUT ROWID;
+-- Weather forecast for the next days (DWD ICON via Open-Meteo), same cells and units as weather_grid.
+CREATE TABLE IF NOT EXISTS weather_forecast (
+    r1 INTEGER NOT NULL, c1 INTEGER NOT NULL, date TEXT NOT NULL, issued TEXT NOT NULL,
+    t2m REAL, t2mx REAL, ws REAL, wsx REAL, prec REAL, rh REAL,
     PRIMARY KEY (r1, c1, date)
 ) WITHOUT ROWID;
 
@@ -183,6 +190,10 @@ def init_db(path: str | None = None) -> None:
         if cols and "hi" not in cols:  # older layout: regenerable, rebuilt by the stats step
             con.execute("DROP TABLE bin_day")
         con.executescript(SCHEMA)
+        wcols = {r[1] for r in con.execute("PRAGMA table_info(weather_grid)")}
+        for col in ("t2mx", "wsx"):          # added after the first weather runs; old rows are refetched by the weather step
+            if col not in wcols:
+                con.execute(f"ALTER TABLE weather_grid ADD COLUMN {col} REAL")
         if not con.execute("SELECT 1 FROM sqlite_master WHERE name='detections'").fetchone():
             con.execute(DETECTIONS_DDL.format(name="detections"))
             for ddl in DETECTIONS_INDEXES:

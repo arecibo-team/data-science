@@ -202,6 +202,16 @@ def _weather_run() -> int:
     return weather_grid.run(settings.FETCH_START)
 
 
+def _forecast_plan() -> Plan:
+    if not settings.WEATHER:
+        return Plan(skip="FIRMS_WEATHER=0")
+    return Plan({"day": settings.today(), "source": "dwd-icon"})
+
+
+def _forecast_run() -> int:
+    return weather_grid.fetch_forecast()
+
+
 STEPS.extend([
     Step("fetch", "Download FIRMS CSVs", _fetch_plan, _fetch_run),
     Step("normalize", "Normalize raw CSVs", _normalize_plan, _normalize_run, soft=("fetch",)),
@@ -212,4 +222,5 @@ STEPS.extend([
     Step("stats", "Day, cell and incident counts", _stats_plan, _stats_run, deps=("tag",)),
     Step("context", "Embed context-data (soil)", _context_plan, _context_run),
     Step("weather", "Daily weather on a 1 degree grid", _weather_plan, _weather_run, soft=("stats",)),
+    Step("forecast", "Weather forecast for the next days", _forecast_plan, _forecast_run, soft=("weather",)),
 ])
