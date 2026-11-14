@@ -12,6 +12,31 @@ RAW_DIR = DATA_DIR / "raw"
 NORM_DIR = DATA_DIR / "normalized"
 ANALYSIS_DIR = DATA_DIR / "analysis"
 WEB_DATA_DIR = ROOT / "web" / "public" / "data"
+INCIDENTS_DIR = DATA_DIR / "incidents"
+
+# Ground-truth incident sources (European fires only).
+EFFIS_WFS = "https://maps.effis.emergency.copernicus.eu/effis"
+EMS_ACTIVATIONS = "https://mapping.emergency.copernicus.eu/activations/api/activations/"
+EMS_DASHBOARD = "https://rapidmapping.emergency.copernicus.eu/backend/dashboard-api/public-activations/"
+# Earliest date we harvest incidents for; matches the start of the FIRMS archive we use.
+INCIDENTS_FROM = "2024-01-01"
+
+# Country codes as used by EFFIS (EL = Greece, UK = United Kingdom) and EMS names.
+# Turkey and Russia are excluded: only partly European and dominated by non-European fires.
+EUROPE_COUNTRIES = {
+    "AL", "AD", "AT", "BY", "BE", "BA", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE",
+    "EL", "GR", "HU", "IS", "IE", "IT", "XK", "LV", "LI", "LT", "LU", "MT", "MD", "MC", "ME",
+    "NL", "MK", "NO", "PL", "PT", "RO", "SM", "RS", "SK", "SI", "ES", "SE", "CH", "UA", "GB",
+    "UK", "VA",
+}
+# Rough Europe bounding box (lon_min, lat_min, lon_max, lat_max) used to reject
+# non-European EMS activations and stray EFFIS polygons.
+EUROPE_BBOX = (-25.0, 34.0, 45.0, 72.0)
+
+# Matching: a NASA detection is "confirmed" when it lies within this distance of an
+# incident polygon and its acquisition date is within the incident's dates +/- slack.
+MATCH_BUFFER_KM = 1.0
+MATCH_DATE_SLACK_DAYS = 2
 
 API_BASE = "https://firms.modaps.eosdis.nasa.gov/api"
 # FIRMS area API accepts 1..5 days per request (verified: 400 'Expects [1..5]' for 10).

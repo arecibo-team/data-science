@@ -9,18 +9,23 @@ export interface Filters {
   sensors: Record<Sensor, boolean>;
   confidence: ConfFilter;
   status: StatusFilter;
+  /** Hide NASA detections not inside a known European incident. */
+  confirmedOnly: boolean;
+  /** Draw incident perimeters for the selected date range. */
+  showIncidents: boolean;
 }
 
 interface Props {
   dates: string[];
   filters: Filters;
   onChange: (f: Filters) => void;
-  stats: { total: number; MODIS: number; VIIRS: number; matched: number };
+  stats: { total: number; MODIS: number; VIIRS: number; matched: number; confirmed: number };
+  incidentCount: number;
   loading: boolean;
   maxDays: number;
 }
 
-export function Controls({ dates, filters, onChange, stats, loading, maxDays }: Props) {
+export function Controls({ dates, filters, onChange, stats, incidentCount, loading, maxDays }: Props) {
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch });
 
   const setFrom = (from: string) => {
@@ -83,6 +88,32 @@ export function Controls({ dates, filters, onChange, stats, loading, maxDays }: 
         </select>
         <p className="muted small">
           Nominal and high include detections at nominal or high confidence. Low only selects low.
+        </p>
+      </fieldset>
+
+      <fieldset>
+        <legend>European incidents</legend>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={filters.confirmedOnly}
+            onChange={(e) => set({ confirmedOnly: e.target.checked })}
+          />
+          Only confirmed European incidents
+          <span className="muted"> {stats.confirmed.toLocaleString()}</span>
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={filters.showIncidents}
+            onChange={(e) => set({ showIncidents: e.target.checked })}
+          />
+          Show incident perimeters
+          <span className="muted"> {incidentCount.toLocaleString()}</span>
+        </label>
+        <p className="muted small">
+          Confirmed means the detection lies within an EFFIS burnt-area perimeter (30 ha or larger) or a
+          Copernicus EMS wildfire mapping area, dated within two days of the incident.
         </p>
       </fieldset>
 

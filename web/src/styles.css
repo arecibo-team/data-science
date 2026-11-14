@@ -65,3 +65,13 @@ dd { margin: 0; }
   .app { grid-template-columns: 1fr; grid-template-rows: auto 60vh; height: auto; }
   .sidebar { border-right: none; border-bottom: 1px solid var(--border); overflow: visible; }
 }
+
+.swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid #dc2626;
+  background: rgba(220, 38, 38, 0.15);
+  border-radius: 2px;
+  vertical-align: middle;
+}

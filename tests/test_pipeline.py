@@ -191,11 +191,13 @@ def test_export_writes_index_and_day_files(tmp_path):
     df["firms_version"] = "x"
     df["source"] = "s"
     index = export_web(df, out_dir=tmp_path)
-    assert index["days"]["2025-08-01"] == {"total": 2, "MODIS": 1, "VIIRS": 1, "matched": 2}
+    assert index["days"]["2025-08-01"] == {"total": 2, "MODIS": 1, "VIIRS": 1, "matched": 2, "confirmed": 0}
     day2 = json.loads((tmp_path / "days" / "2025-08-02.json").read_text())
     assert "bt_mid_k" in day2["fields"] and len(day2["rows"][0]) == len(day2["fields"])
-    assert day2["rows"][0][-1] is None  # unmatched cluster_id -> null
-    assert day2["rows"][0][-2] == "viirs_only"
+    row = dict(zip(day2["fields"], day2["rows"][0]))
+    assert row["cluster_id"] is None  # unmatched cluster_id -> null
+    assert row["status"] == "viirs_only"
+    assert row["incident"] is None  # no incidents supplied -> unconfirmed
 
 
 def _write(path, text):

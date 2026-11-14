@@ -1,4 +1,4 @@
-import type { Cell, DayFile, Index, Point } from "./types";
+import type { Cell, DayFile, Index, IncidentCollection, Point } from "./types";
 
 const base = import.meta.env.BASE_URL;
 
@@ -42,5 +42,23 @@ function toPoints(date: string, file: DayFile): Point[] {
     bt: get(row, "bt_mid_k") as number | null,
     status: get(row, "status") as Point["status"],
     cluster: get(row, "cluster_id") as number | null,
+    incident: (get(row, "incident") as string | null) || null,
   }));
+}
+
+const incidentCache = new Map<string, Promise<IncidentCollection>>();
+
+/** Incidents active on one UTC day. Cached; failed loads retry next time. */
+export function loadIncidentDay(date: string, dir: string): Promise<IncidentCollection> {
+  const key = `${dir}/${date}`;
+  let p = incidentCache.get(key);
+  if (!p) {
+    p = fetch(`${base}data/${dir}/${date}.json`).then(async (r) => {
+      if (!r.ok) throw new Error(`incidents ${date}: HTTP ${r.status}`);
+      return (await r.json()) as IncidentCollection;
+    });
+    incidentCache.set(key, p);
+    p.catch(() => incidentCache.delete(key));
+  }
+  return p;
 }

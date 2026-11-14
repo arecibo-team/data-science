@@ -11,6 +11,8 @@ import logging
 from . import config as C
 from .export import export_web
 from .harmonize import MatchParams, cluster_table, daily_summary, match_cross_sensor
+from .incidents import load_incidents
+from .match import incident_detection_counts, tag_incidents
 from .normalize import load_normalized, normalize_all
 
 log = logging.getLogger("firms.build")
@@ -22,12 +24,19 @@ def build(params: MatchParams) -> None:
     log.info("loaded %d unique detections (NRT/SP deduplicated)", len(df))
 
     h = match_cross_sensor(df, params)
+    incidents = load_incidents()
+    if not incidents:
+        log.warning("no incidents file found; run `python -m firms.incidents` to confirm detections")
+    h["incident_id"] = tag_incidents(h, incidents)
+    log.info("confirmed %d detections inside %d incidents",
+             int(h["incident_id"].notna().sum()), len(incident_detection_counts(h["incident_id"])))
+
     C.ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
     h.to_parquet(C.ANALYSIS_DIR / "harmonized.parquet", index=False)
     cluster_table(h).to_csv(C.ANALYSIS_DIR / "clusters.csv", index=False)
     daily_summary(h).to_csv(C.ANALYSIS_DIR / "daily_summary.csv", index=False)
 
-    export_web(h)
+    export_web(h, incidents)
     n_both = int((h["harmonized_status"] == "both").sum())
     log.info("matched %d detections into clusters (%d MODIS-only/VIIRS-only left single)",
              n_both, len(h) - n_both)

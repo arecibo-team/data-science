@@ -26,13 +26,33 @@ analysis and a simple React map.
 # 1. download raw CSVs (resumable; existing files are skipped)
 uv run python -m firms.fetch --start 2025-08-01 --end 2025-08-31 --bbox 15,-20,35,-5
 
-# 2. normalize -> harmonize -> analysis tables -> web export
+# 2. European incidents (EFFIS perimeters + Copernicus EMS wildfire areas)
+uv run python -m firms.incidents                   # resumable; refreshes the current season
+
+# 3. normalize -> harmonize -> incident match -> analysis tables -> web export
 uv run python -m firms.build                       # 1 km, 180 min match window
 uv run python -m firms.build --radius-km 0.75 --window-min 120
 
-# 3. run the map
+# 4. run the map
 cd web && bun run dev         # or: bun run build && bun run preview
 ```
+
+### European incidents
+
+`firms.incidents` harvests real fire incidents in Europe:
+
+- **EFFIS** burnt-area perimeters (JRC/Copernicus WFS, layers `ms:modis.ba.poly.<year>` and `ms:modis.ba.poly.season`).
+  Only fires of about 30 ha or more are mapped. Countries are restricted to Europe (`firms/config.py: EUROPE_COUNTRIES`);
+  Turkey and Russia are excluded.
+- **Copernicus EMS** rapid-mapping wildfire activations (`category=fire`), using the AOI extents from the
+  dashboard API. Activations with a non-European continent are dropped. Some non-rapid `EMSN` activations
+  return 403 and are skipped.
+- **National reports**: not included. No stable machine-readable download was available.
+
+`firms.build` tags each NASA detection with the incident it falls inside: within 1 km of a perimeter (the
+buffer is in degrees, so longitude is slightly under-counted at high latitude) and dated within two days of
+the incident's start and end. Unmatched detections are kept but marked unconfirmed. The map's
+"Only confirmed European incidents" filter hides them.
 
 `--bbox` takes `W,S,E,N` or `world`. Standard-processing (`_SP`) archives are used where available,
 and NRT for the most recent days. The FIRMS API accepts at most 5 days per request, so the fetcher
@@ -44,10 +64,11 @@ splits ranges into 5-day windows.
 | --- | --- |
 | `data/raw/<SOURCE>/<YYYYMMDD>_<days>.csv` | raw FIRMS responses (gitignored) |
 | `data/normalized/<SOURCE>/*.parquet` | one common schema per detection (`firms/config.py: SCHEMA`) |
-| `data/analysis/harmonized.parquet` | all detections with `cluster_id` and `harmonized_status` |
+| `data/incidents/incidents.geojson` | European incident polygons from EFFIS and EMS (gitignored) |
+| `data/analysis/harmonized.parquet` | all detections with `cluster_id`, `harmonized_status` and `incident_id` |
 | `data/analysis/clusters.csv` | one row per MODIS+VIIRS cluster |
 | `data/analysis/daily_summary.csv` | per UTC day: counts, FRP and matched share per sensor |
-| `web/public/data/` | `index.json` and `days/YYYY-MM-DD.json` for the map (gitignored) |
+| `web/public/data/` | `index.json`, `days/YYYY-MM-DD.json` (detections) and `incident-days/YYYY-MM-DD.json` (incidents) for the map (gitignored) |
 
 ## Harmonization notes
 
