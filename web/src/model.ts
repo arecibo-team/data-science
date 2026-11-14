@@ -1,4 +1,4 @@
-import type { Enums, GridData, PointsData } from "./types";
+import type { Enums, PointsData } from "./types";
 
 export type LayerKey = "MODIS" | "VIIRS" | "COMMON" | "INCIDENTS";
 export type ConfFilter = "all" | "high" | "nominal" | "low";
@@ -103,46 +103,4 @@ export function scanPoints(data: PointsData, enums: Enums, f: Filters): ScanResu
     total,
     matched,
   };
-}
-
-/** One grid cell of the long-range overview, counting only the enabled layers. */
-export interface GridCell {
-  lat: number;
-  lon: number;
-  count: number;
-  modis: number;
-  viirs: number;
-  confirmed: number;
-}
-
-/**
- * Apply the layer toggles to the server's per-cell counts.
- *
- * A detection can belong to a sensor layer and to COMMON. Counting each one once:
- * a confirmed MODIS detection is already in the MODIS count when that layer is on,
- * so COMMON only adds the confirmed detections whose sensor layer is off.
- */
-export function aggregateGrid(grid: GridData, f: Filters): { cells: GridCell[]; counts: LayerCounts } {
-  const counts: LayerCounts = { MODIS: 0, VIIRS: 0, COMMON: 0, INCIDENTS: 0 };
-  const M = f.layers.MODIS ? 1 : 0;
-  const V = f.layers.VIIRS ? 1 : 0;
-  const C = f.layers.COMMON ? 1 : 0;
-  const cellDeg = grid.cell_deg;
-  const cells: GridCell[] = [];
-  for (const [r, c, m, v, cm, cv] of grid.cells) {
-    counts.MODIS += m;
-    counts.VIIRS += v;
-    counts.COMMON += cm + cv;
-    const count = M * m + V * v + C * (cm * (1 - M) + cv * (1 - V));
-    if (count === 0) continue;
-    cells.push({
-      lat: -90 + (r + 0.5) * cellDeg,
-      lon: -180 + (c + 0.5) * cellDeg,
-      count,
-      modis: M * m,
-      viirs: V * v,
-      confirmed: C * (cm + cv),
-    });
-  }
-  return { cells, counts };
 }

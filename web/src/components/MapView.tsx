@@ -1,15 +1,15 @@
 import { useEffect } from "react";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
-import { CanvasPointLayer, SENSOR_COLOR } from "./PointLayer";
-import type { GridCell, VisibleSet } from "../model";
+import { CanvasPointLayer } from "./PointLayer";
+import type { VisibleSet } from "../model";
 import type { Bounds, IncidentFeature } from "../types";
 
 interface Props {
   /** Individual detections (short ranges). Null when the grid is shown instead. */
   visible: VisibleSet | null;
-  /** Grid cells of counts (long ranges). Null when individual detections are shown. */
-  cells: GridCell[] | null;
+  /** Heat tile URL template when the view is too dense for points; null otherwise. */
+  tileUrl: string | null;
   incidents: IncidentFeature[];
   onPick: (i: number | null) => void;
   /** Called with the visible bounds and zoom level on load and when the view settles. */
@@ -20,8 +20,6 @@ const INCIDENT_STYLE = {
   "Copernicus EMS": { color: "#7c3aed", fillColor: "#7c3aed" }, // violet: EMS mapping areas
   "Sentinel-2": { color: "#dc2626", fillColor: "#dc2626" }, // red: Sentinel-2 burn scars (dNBR)
 } as const;
-
-const CONFIRMED_RING = "#dc2626";
 
 /** Outline + translucent fill for each incident, with a popup describing it. */
 function IncidentsOverlay({ incidents }: Pick<Props, "incidents">) {
@@ -70,45 +68,10 @@ function PointsOverlay({ visible, onPick }: Pick<Props, "visible" | "onPick">) {
   return null;
 }
 
-/** Grid cells, sized by count. Red ring: at least one confirmed detection in the cell. */
-function GridOverlay({ cells }: Pick<Props, "cells">) {
-  const map = useMap();
-  useEffect(() => {
-    if (!cells) return;
-    const group = L.layerGroup();
-    for (const c of cells) {
-      const modisDominant = c.modis >= c.viirs;
-      const fill = modisDominant ? SENSOR_COLOR.MODIS : SENSOR_COLOR.VIIRS;
-      L.circleMarker([c.lat, c.lon], {
-        radius: Math.min(18, 3 + 2.5 * Math.log10(c.count + 1)),
-        color: c.confirmed > 0 ? CONFIRMED_RING : fill,
-        weight: c.confirmed > 0 ? 1.5 : 1,
-        fillColor: fill,
-        fillOpacity: 0.7,
-      })
-        .bindPopup(() => {
-          const box = document.createElement("div");
-          const lines = [
-            `${c.count.toLocaleString()} detections`,
-            `MODIS ${c.modis.toLocaleString()} · VIIRS ${c.viirs.toLocaleString()}`,
-            `Confirmed ${c.confirmed.toLocaleString()}`,
-            `${c.lat.toFixed(1)}, ${c.lon.toFixed(1)} (1° cell)`,
-          ];
-          for (const line of lines) {
-            const row = document.createElement("div");
-            row.textContent = line;
-            box.append(row);
-          }
-          return box;
-        })
-        .addTo(group);
-    }
-    group.addTo(map);
-    return () => {
-      group.remove();
-    };
-  }, [map, cells]);
-  return null;
+/** Server-rendered heat tiles: the overview when a view holds too many detections to draw one by one. */
+function HeatTiles({ url }: { url: string | null }) {
+  if (!url) return null;
+  return <TileLayer url={url} zIndex={420} maxZoom={18} tileSize={256} opacity={0.95} />;
 }
 
 /** Report the visible bounds and zoom on load and after every pan or zoom. */
@@ -133,7 +96,7 @@ export function MapView(props: Props) {
       />
       <IncidentsOverlay incidents={props.incidents} />
       <PointsOverlay visible={props.visible} onPick={props.onPick} />
-      <GridOverlay cells={props.cells} />
+      <HeatTiles url={props.tileUrl} />
       <ViewReporter onView={props.onView} />
     </MapContainer>
   );

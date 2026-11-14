@@ -5,6 +5,7 @@ Tables
     incidents         independent European incidents (EMS areas, Sentinel-2 burn scars)
     clusters          one row per cross-sensor cluster
     day_stats         per UTC day counts, served as the date index of the map
+    bin_day           per day and 0.1 degree cell counts, the source of low-zoom heat tiles
     pipeline_steps    which pipeline steps ran, with what inputs, and how they ended
 
 Categorical detection columns are small integers. Code 0 means missing and the value lists
@@ -67,10 +68,19 @@ CREATE TABLE IF NOT EXISTS clusters (
     first_utc TEXT, last_utc TEXT, max_frp_mw REAL, lat REAL, lon REAL
 );
 
+-- Detections per day and 0.1 degree cell, for the low-zoom heat tiles (see server/tiles.py).
+CREATE TABLE IF NOT EXISTS bin_day (
+    r INTEGER NOT NULL, c INTEGER NOT NULL, date TEXT NOT NULL,
+    m INTEGER NOT NULL, v INTEGER NOT NULL, cm INTEGER NOT NULL, cv INTEGER NOT NULL,
+    PRIMARY KEY (r, c, date)
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS day_stats (
     date TEXT PRIMARY KEY, total INTEGER, modis INTEGER, viirs INTEGER, matched INTEGER, confirmed INTEGER
 );
 """
+
+BIN_DEG = 0.1  # cell size of bin_day, in degrees
 
 DETECTIONS_DDL = """
 CREATE TABLE {name} (

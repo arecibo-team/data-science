@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { loadGrid, loadIncidents, loadMeta, loadPipeline, loadPoints, pointAt, type Query } from "./data";
+import { loadIncidents, loadMeta, loadPipeline, loadPoints, pointAt, tileUrl, type Query } from "./data";
 import { MapView } from "./components/MapView";
 import { Controls } from "./components/Controls";
 import { SENSOR_COLOR } from "./components/PointLayer";
-import { aggregateGrid, scanPoints, type Filters, type LayerCounts } from "./model";
-import type { Bounds, GridData, IncidentFeature, IncidentProperties, Meta, PipelineStep, Point, PointsData } from "./types";
+import { scanPoints, type Filters, type LayerCounts } from "./model";
+import type { Bounds, IncidentFeature, IncidentProperties, Meta, PipelineStep, Point, PointsData } from "./types";
 
-const NO_COUNTS: LayerCounts = { MODIS: 0, VIIRS: 0, COMMON: 0, INCIDENTS: 0 };
 const PAD = 0.25; // fetch this much beyond the view on each side, so small pans need no request
 const DEBOUNCE_MS = 250;
 
@@ -33,18 +32,13 @@ function pad(b: Bounds): Bounds {
   };
 }
 
-/** Grid cell size for a zoom level: about one cell per 40 px, from the sizes the server offers. */
-function cellFor(zoom: number, cells: number[]): number {
-  const want = 360 / (256 * 2 ** zoom) * 40;
-  return cells.find((c) => c >= want) ?? cells[cells.length - 1];
-}
-
 export default function App() {
   const [meta, setMeta] = useState<Meta | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters | null>(null);
   const [points, setPoints] = useState<PointsData | null>(null);
-  const [grid, setGrid] = useState<GridData | null>(null);
+  // Set when the view holds more detections than the server sends as points: heat tiles are shown instead.
+  const [overview, setOverview] = useState<{ total: number } | null>(null);
   const [incidents, setIncidents] = useState<IncidentFeature[]>([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Point | null>(null);
@@ -109,11 +103,9 @@ export default function App() {
     if (!meta || !filters || !view) return;
     const prev = loaded.current;
     const sameRange = prev && prev.from === from && prev.to === to && prev.version === dataVersion;
-    const cell = cellFor(view.zoom, meta.grid_cells);
-    const haveGrid = grid !== null && points === null;
+    // In the overview, zooming in a lot may bring the count under the point limit: ask again.
     const stillGood =
-      sameRange && inside(view.bounds, prev.bounds) &&
-      (haveGrid ? prev.zoom === view.zoom && area(view.bounds) > area(prev.bounds) / 9 : true);
+      sameRange && inside(view.bounds, prev.bounds) && (overview ? area(view.bounds) > area(prev.bounds) / 9 : true);
     if (stillGood) {
       setLoading(false); // an earlier in-flight request was cancelled by this effect's cleanup
       return;
@@ -127,10 +119,9 @@ export default function App() {
       setError(null);
       try {
         const [pts, inc] = await Promise.all([loadPoints(q, ctl.signal), loadIncidents(q, ctl.signal)]);
-        const g = pts.overflow ? await loadGrid(q, cell, ctl.signal) : null;
         if (ctl.signal.aborted) return;
         setPoints(pts.overflow ? null : pts);
-        setGrid(g);
+        setOverview(pts.overflow ? { total: pts.total } : null);
         setIncidents(inc);
         setSelected(null);
         loaded.current = { from, to, bounds, zoom: view.zoom, version: dataVersion };
@@ -144,7 +135,7 @@ export default function App() {
       clearTimeout(timer);
       ctl.abort();
     };
-    // `grid` and `points` only decide whether a refetch is needed; they must not trigger one.
+    // `overview` only decides whether a refetch is needed; it must not trigger one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meta, from, to, view, dataVersion]);
 
@@ -156,14 +147,12 @@ export default function App() {
     [filters, enums, points],
   );
 
-  // Grid: the server's per-cell counts with the layer toggles applied.
-  const agg = useMemo(() => (filters && grid ? aggregateGrid(grid, filters) : null), [filters, grid]);
-
-  const counts: LayerCounts = useMemo(
-    () => ({ ...(scan?.counts ?? agg?.counts ?? NO_COUNTS), INCIDENTS: incidents.length }),
-    [scan, agg, incidents],
+  const counts: LayerCounts | null = useMemo(
+    () => (scan ? { ...scan.counts, INCIDENTS: incidents.length } : null),
+    [scan, incidents],
   );
 
+  const layerMask = filters ? (filters.layers.MODIS ? 1 : 0) | (filters.layers.VIIRS ? 2 : 0) | (filters.layers.COMMON ? 4 : 0) : 7;
   const stats = scan ? { total: scan.total, matched: scan.matched } : null;
   const showIncidents = filters?.layers.INCIDENTS ? incidents : [];
 
@@ -215,7 +204,8 @@ export default function App() {
           counts={counts}
           stats={stats}
           loading={loading}
-          mode={grid ? "grid" : "points"}
+          overview={overview}
+          incidentCount={incidents.length}
           pipeline={running ? steps : null}
         />
         {error && <p className="error">{error}</p>}
@@ -254,7 +244,7 @@ export default function App() {
       <main className="map-wrap">
         <MapView
           visible={scan?.visible ?? null}
-          cells={agg?.cells ?? null}
+          tileUrl={overview ? tileUrl(from, to, layerMask, meta.generated_utc ?? "0") : null}
           incidents={showIncidents}
           onPick={onPick}
           onView={onView}

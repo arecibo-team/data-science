@@ -29,3 +29,7 @@ MAX_POINTS = int(os.environ.get("FIRMS_MAX_POINTS", "250000"))
 
 def today() -> str:
     return dt.datetime.now(dt.timezone.utc).date().isoformat()
+
+# Heat tile cache: rendered PNGs per data version, date range, layer mask and zoom level.
+TILE_DIR = os.environ.get("FIRMS_TILE_DIR", str(C.DATA_DIR / "tiles"))
+TILE_CACHE_MB = int(os.environ.get("FIRMS_TILE_CACHE_MB", "2000"))

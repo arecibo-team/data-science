@@ -6,7 +6,8 @@
     ems          Copernicus EMS wildfire areas -> incidents table   (network, once per day)
     sentinel2    Sentinel-2 burn scars -> incidents table           (network, slow, resumable)
     tag          mark detections that fall inside an incident
-    stats        per-day counts and per-incident detection counts
+    stats        per-day counts, per-cell counts (bin_day) and per-incident detection counts
+    tiles        drop old heat tile caches, pre-render the low zoom levels
 
 Every step reads its settings from `server.settings`, so a changed setting is a new fingerprint
 and the step runs again.
@@ -24,7 +25,7 @@ from firms.harmonize import MatchParams, cluster_table, match_cross_sensor
 from firms.match import tag_incidents
 from firms.normalize import load_normalized, normalize_all
 
-from .. import db, settings
+from .. import db, settings, tiles
 from . import store
 from .runner import STEPS, Plan, Step
 
@@ -161,9 +162,35 @@ def _stats_run() -> int:
             SELECT date(ts, 'unixepoch'), COUNT(*), SUM(sensor=1), SUM(sensor=2), SUM(status=1),
                    SUM(incident_id IS NOT NULL)
             FROM detections GROUP BY 1""")
+        con.execute("DELETE FROM bin_day")
+        con.execute("""
+            INSERT INTO bin_day
+            SELECT CAST((lat + 90) / :d AS INTEGER), CAST((lon + 180) / :d AS INTEGER), date(ts, 'unixepoch'),
+                   SUM(sensor = 1), SUM(sensor = 2),
+                   SUM(sensor = 1 AND incident_id IS NOT NULL), SUM(sensor = 2 AND incident_id IS NOT NULL)
+            FROM detections GROUP BY 1, 2, 3""", {"d": db.BIN_DEG})
         con.execute("UPDATE incidents SET detections = COALESCE("
                     "(SELECT COUNT(*) FROM detections d WHERE d.incident_id = incidents.incident_id), 0)")
         return con.execute("SELECT COUNT(*) FROM day_stats").fetchone()[0]
+
+
+def _tiles_plan() -> Plan:
+    return Plan({"zoom": tiles.PRERENDER_ZOOM})
+
+
+def _tiles_run() -> int:
+    """Drop caches of older data versions and pre-render the low zoom levels."""
+    con = db.connect()
+    try:
+        days = [r[0] for r in con.execute("SELECT date FROM day_stats ORDER BY date")]
+        if not days:
+            return 0
+        tiles.clear_old_versions(tiles.data_version(con))
+        n = tiles.prerender(con, days[0], days[-1])
+        tiles.prune(settings.TILE_CACHE_MB * 1024 * 1024)
+        return n
+    finally:
+        con.close()
 
 
 STEPS.extend([
@@ -173,5 +200,6 @@ STEPS.extend([
     Step("ems", "Copernicus EMS incidents", _ems_plan, _ems_run),
     Step("sentinel2", "Sentinel-2 burn scars", _s2_plan, _s2_run, deps=("harmonize",)),
     Step("tag", "Tag detections with incidents", _tag_plan, _tag_run, deps=("harmonize",), soft=("ems", "sentinel2")),
-    Step("stats", "Day and incident counts", _stats_plan, _stats_run, deps=("tag",)),
+    Step("stats", "Day, cell and incident counts", _stats_plan, _stats_run, deps=("tag",)),
+    Step("tiles", "Pre-render heat tiles", _tiles_plan, _tiles_run, deps=("stats",)),
 ])

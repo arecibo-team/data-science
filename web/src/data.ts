@@ -1,4 +1,4 @@
-import type { Bounds, Enums, GridData, IncidentCollection, Meta, PipelineStep, Point, PointsData, Status } from "./types";
+import type { Bounds, Enums, IncidentCollection, Meta, PipelineStep, Point, PointsData, Status } from "./types";
 
 const base = import.meta.env.BASE_URL;
 // In dev the Vite proxy forwards /api to the Python server; in production it is served from the same origin.
@@ -23,8 +23,15 @@ async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
 
 export const loadMeta = (): Promise<Meta> => getJson(api("meta"));
 export const loadPipeline = (): Promise<{ running: boolean; steps: PipelineStep[] }> => getJson(api("pipeline"));
-export const loadGrid = (q: Query, cell: number, signal: AbortSignal): Promise<GridData> =>
-  getJson(api("grid", { ...params(q), cell }), signal);
+
+/**
+ * Heat tile URL template for Leaflet. `layers` is a bit mask (MODIS 1, VIIRS 2, COMMON 4) and `version`
+ * changes when the server has new data, so cached tiles are not reused across updates.
+ */
+export function tileUrl(from: string, to: string, layers: number, version: string): string {
+  const u = api("tiles/0/0/0.png", { from, to, layers, v: version });
+  return u.replace("tiles/0/0/0.png", "tiles/{z}/{x}/{y}.png").replace(/%7B/g, "{").replace(/%7D/g, "}");
+}
 export const loadIncidents = (q: Query, signal: AbortSignal): Promise<IncidentCollection["features"]> =>
   getJson<IncidentCollection>(api("incidents", params(q)), signal).then((c) => c.features);
 

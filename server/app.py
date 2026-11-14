@@ -3,7 +3,7 @@
     GET /api/meta        enums, day index, incident summary, pipeline state
     GET /api/pipeline    the pipeline step ledger
     GET /api/points      detections in a date range and bounding box, as binary columns
-    GET /api/grid        counts per grid cell, for ranges or views with too many points
+    GET /api/tiles/z/x/y.png   heat tiles, for views with too many points (cached per zoom level)
     GET /api/incidents   incident polygons overlapping a date range and bounding box
 
 The built web app (web/dist) is served from / when it exists. The pipeline runs in a background
@@ -26,12 +26,11 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import db, pipeline, settings
+from . import db, pipeline, settings, tiles
 
 log = logging.getLogger("server")
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
-GRID_CELLS = (0.25, 0.5, 1.0, 2.0, 4.0)
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 
 # Binary column order of /api/points. The web loader reads them in exactly this order.
 COLUMNS = [
@@ -138,7 +137,6 @@ def api_meta():
     return {
         "version": FORMAT_VERSION,
         "generated_utc": last,
-        "grid_cells": list(GRID_CELLS),
         "enums": db.ENUMS,
         "incidents": {"count": inc["n"], "confirmed": inc["c"], "sources": sources},
         "days": days,
@@ -178,7 +176,7 @@ def _encode_points(df: pd.DataFrame, total: int, overflow: bool) -> bytes:
 @app.get("/api/points")
 def api_points(q: Query_ = Depends(_params)):
     """Detections in the range and box. When there are more than MAX_POINTS, only the total is sent
-    (`overflow: true`) and the client asks /api/grid instead."""
+    (`overflow: true`) and the client shows /api/tiles instead."""
     con = db.connect(readonly=True)
     try:
         total = con.execute(f"SELECT COUNT(*) FROM detections WHERE {q.WHERE}", q.args).fetchone()[0]
@@ -192,33 +190,23 @@ def api_points(q: Query_ = Depends(_params)):
     return Response(_encode_points(df, total, False), media_type="application/octet-stream")
 
 
-_grid_cache: dict[tuple, bytes] = {}
-
-
-@app.get("/api/grid")
-def api_grid(q: Query_ = Depends(_params), cell: float = 1.0):
-    """Per cell: [row, col, modis, viirs, confirmed_modis, confirmed_viirs]. Row 0 starts at -90, col 0 at -180."""
-    if cell not in GRID_CELLS:
-        raise HTTPException(422, f"cell must be one of {list(GRID_CELLS)}")
+@app.get("/api/tiles/{z}/{x}/{y}.png")
+def api_tile(z: int, x: int, y: int, date_from: str = Query(..., alias="from"), date_to: str = Query(..., alias="to"),
+             layers: int = 7):
+    """Heat tile of the detections in a date range. `layers` is a bit mask: MODIS=1, VIIRS=2, COMMON=4."""
+    if not (0 <= z <= tiles.MAX_ZOOM and 0 <= x < 2 ** z and 0 <= y < 2 ** z):
+        raise HTTPException(404, "no such tile")
+    if not 0 <= layers <= 7:
+        raise HTTPException(422, "layers must be 0..7")
+    Query_(date_from, date_to, -180, -90, 180, 90)  # validates the dates
     con = db.connect(readonly=True)
     try:
-        key = (_version(con), cell, *q.key)
-        if key not in _grid_cache:
-            rows = con.execute(
-                "SELECT CAST((lat + 90) / :cell AS INTEGER), CAST((lon + 180) / :cell AS INTEGER), "
-                "SUM(sensor = 1), SUM(sensor = 2), "
-                "SUM(sensor = 1 AND incident_id IS NOT NULL), SUM(sensor = 2 AND incident_id IS NOT NULL) "
-                "FROM detections WHERE ts >= :t0 AND ts < :t1 AND lat >= :s AND lat <= :n "
-                "AND lon >= :w AND lon <= :e GROUP BY 1, 2",
-                {"cell": cell, "t0": q.t0, "t1": q.t1, "s": q.south, "n": q.north, "w": q.west, "e": q.east},
-            ).fetchall()
-            if len(_grid_cache) > 64:
-                _grid_cache.clear()
-            _grid_cache[key] = json.dumps({"cell_deg": cell, "cells": [list(r) for r in rows]},
-                                          separators=(",", ":")).encode()
+        version = tiles.data_version(con)
+        png = tiles.get_tile(con, z, x, y, date_from, date_to, layers)
     finally:
         con.close()
-    return Response(_grid_cache[key], media_type="application/json")
+    return Response(png, media_type="image/png", headers={
+        "Cache-Control": "public, max-age=3600", "ETag": f'"{version}"'})
 
 
 @app.get("/api/incidents")

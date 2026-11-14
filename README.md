@@ -42,7 +42,8 @@ it proxies `/api` to the server.
 | `ems` | Copernicus EMS areas into `incidents` | once a day |
 | `sentinel2` | Sentinel-2 burn scars into `incidents` (slow, resumable) | `harmonize` reran |
 | `tag` | marks detections inside an incident | `harmonize` reran or the incidents changed |
-| `stats` | per-day and per-incident counts | `tag` reran |
+| `stats` | per-day counts, per-cell counts (`bin_day`), per-incident counts | `tag` reran |
+| `tiles` | deletes old heat tile caches, pre-renders zoom 0-6 for all / last year / last 30 days | `stats` reran |
 
 The `pipeline_steps` table records each run (inputs, status, duration, rows, error). A step is skipped when a
 `done` row with the same inputs exists. Dependents include the upstream run id, so rerunning a step reruns
@@ -60,9 +61,16 @@ Settings (environment): `FIRMS_START`, `FIRMS_BBOX` (default `-25,-20,45,72`), `
 
 ### API
 
-`/api/meta`, `/api/pipeline`, `/api/points`, `/api/grid`, `/api/incidents`. The map asks for the current view
-(date range plus bounding box). `/api/points` returns binary columns; when a view holds more than
-`FIRMS_MAX_POINTS` (250k) detections the map gets per-cell counts from `/api/grid` instead.
+`/api/meta`, `/api/pipeline`, `/api/points`, `/api/incidents`, `/api/tiles/{z}/{x}/{y}.png`. The map asks for the
+current view (date range plus bounding box). `/api/points` returns binary columns; when a view holds more than
+`FIRMS_MAX_POINTS` (250k) detections the map shows heat tiles instead (density on a log scale, orange MODIS,
+blue VIIRS, red = confirmed inside an incident).
+
+Tiles are cached on disk under `data/tiles/<data version>/<from>_<to>/<layer mask>/<z>/<x>/<y>.png`, one file per
+zoom level, so a repeat view costs about a millisecond. Zoom 0-7 is drawn from the per-day, per-0.1° `bin_day`
+table, higher zooms from the detections themselves. A pipeline rerun starts a new cache version (old ones are
+deleted by the `tiles` step); the cache is capped by `FIRMS_TILE_CACHE_MB` (default 2000). The sidebar's
+"3 days / 30 days / 1 year / All" presets use exactly the ranges that are pre-rendered.
 
 ### Independent European incidents
 
@@ -97,7 +105,8 @@ splits ranges into 5-day windows.
 
 | Path | Contents |
 | --- | --- |
-| `data/firms.db` | SQLite: `detections`, `incidents`, `clusters`, `day_stats`, `pipeline_steps` |
+| `data/firms.db` | SQLite: `detections`, `incidents`, `clusters`, `day_stats`, `bin_day`, `pipeline_steps` |
+| `data/tiles/` | cached heat tiles (regenerable) |
 | `data/raw/<SOURCE>/<YYYYMMDD>_<days>.csv` | raw FIRMS responses (gitignored) |
 | `data/normalized/<SOURCE>/*.parquet` | one common schema per detection (`firms/config.py: SCHEMA`) |
 | `data/incidents/raw/` | cached EMS and per-event Sentinel-2 results, so runs resume |

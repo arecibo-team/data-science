@@ -164,14 +164,114 @@ def test_points_overflow_sends_only_the_total(tmp_db, monkeypatch):
     assert all(len(v) == 0 for v in cols.values())
 
 
-def test_grid_counts_per_cell(tmp_db):
+# ---------- heat tiles ----------
+
+def _png_alpha(png):
+    """Decode the RGBA PNG written by server.tiles.encode_png (filter 0 only) into an (h, w, 4) array."""
+    import zlib
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    pos, idat = 8, b""
+    while pos < len(png):
+        (n,) = struct.unpack_from(">I", png, pos)
+        kind = png[pos + 4:pos + 8]
+        if kind == b"IHDR":
+            w, h = struct.unpack_from(">II", png, pos + 8)
+        if kind == b"IDAT":
+            idat += png[pos + 8:pos + 8 + n]
+        pos += 12 + n
+    raw = np.frombuffer(zlib.decompress(idat), np.uint8).reshape(h, w * 4 + 1)
+    assert (raw[:, 0] == 0).all()
+    return raw[:, 1:].reshape(h, w, 4)
+
+
+def _tile_xy(z, lat, lon):
+    from server import tiles
+    px, py = tiles.project(np.array([lat]), np.array([lon]), z)
+    return int(px[0] // 256), int(py[0] // 256), int(px[0] % 256), int(py[0] % 256)
+
+
+def _client_with_bins():
     c = _client_with_data()
-    body = c.get("/api/grid", params={"from": "2025-08-01", "to": "2025-08-02", "cell": 1}).json()
-    assert body["cell_deg"] == 1.0
-    # (lat 10, lon 20) at 1 degree: row 100, col 200, one MODIS and one VIIRS, none confirmed.
-    assert [100, 200, 1, 1, 0, 0] in body["cells"]
-    assert [131, 176, 0, 1, 0, 1] in body["cells"]  # (41, -4): confirmed VIIRS
-    assert c.get("/api/grid", params={"from": "2025-08-01", "to": "2025-08-02", "cell": 3}).status_code == 422
+    with db.session() as con:
+        con.execute("DELETE FROM bin_day")
+        con.execute("""INSERT INTO bin_day SELECT CAST((lat + 90) / 0.1 AS INTEGER), CAST((lon + 180) / 0.1 AS INTEGER),
+                       date(ts, 'unixepoch'), SUM(sensor = 1), SUM(sensor = 2),
+                       SUM(sensor = 1 AND incident_id IS NOT NULL), SUM(sensor = 2 AND incident_id IS NOT NULL)
+                       FROM detections GROUP BY 1, 2, 3""")
+        con.execute("INSERT INTO pipeline_steps(step, fingerprint, status, started_at) VALUES ('stats', 'x', 'done', 'now')")
+    return c
+
+
+def test_tile_draws_density_at_the_right_pixel_and_hue_follows_layers(tmp_db, monkeypatch):
+    monkeypatch.setattr(settings, "TILE_DIR", str(tmp_db / "tiles"))
+    c = _client_with_bins()
+    for z in (4, 10):  # bins at z4, raw detections at z10
+        x, y, px, py = _tile_xy(z, 10.0, 20.0)
+        r = c.get(f"/api/tiles/{z}/{x}/{y}.png", params={"from": "2025-08-01", "to": "2025-08-02", "layers": 7})
+        assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+        img = _png_alpha(r.content)
+        assert img.shape == (256, 256, 4)
+        assert img[py, px, 3] > 20  # coloured (faintly for 2 detections) at the detection pixel
+        assert img[(py + 128) % 256, (px + 128) % 256, 3] == 0  # and clear far from it
+        only_modis = _png_alpha(c.get(f"/api/tiles/{z}/{x}/{y}.png", params={
+            "from": "2025-08-01", "to": "2025-08-02", "layers": 1}).content)
+        only_viirs = _png_alpha(c.get(f"/api/tiles/{z}/{x}/{y}.png", params={
+            "from": "2025-08-01", "to": "2025-08-02", "layers": 2}).content)
+        assert only_modis[py, px, 0] > only_modis[py, px, 2]   # MODIS is orange (red channel high)
+        assert only_viirs[py, px, 2] > only_viirs[py, px, 0]   # VIIRS is blue
+        none = c.get(f"/api/tiles/{z}/{x}/{y}.png", params={"from": "2025-08-01", "to": "2025-08-02", "layers": 0})
+        assert _png_alpha(none.content)[..., 3].max() == 0
+
+
+def test_tile_is_cached_per_zoom_and_invalidated_by_a_new_data_version(tmp_db, monkeypatch):
+    from server import tiles
+    monkeypatch.setattr(settings, "TILE_DIR", str(tmp_db / "tiles"))
+    c = _client_with_bins()
+    x, y, _, _ = _tile_xy(4, 10.0, 20.0)
+    q = {"from": "2025-08-01", "to": "2025-08-02"}
+    first = c.get(f"/api/tiles/4/{x}/{y}.png", params=q).content
+    files = list((tmp_db / "tiles").rglob("*.png"))
+    assert len(files) == 1 and files[0].read_bytes() == first
+
+    calls = []
+    real = tiles.render_from_db
+    monkeypatch.setattr(tiles, "render_from_db", lambda *a, **k: calls.append(a) or real(*a, **k))
+    assert c.get(f"/api/tiles/4/{x}/{y}.png", params=q).content == first
+    assert calls == []  # served from the cache, nothing rendered
+
+    x2, y2, _, _ = _tile_xy(5, 10.0, 20.0)
+    c.get(f"/api/tiles/5/{x2}/{y2}.png", params=q)
+    assert len(calls) == 1 and len(list((tmp_db / "tiles").rglob("*.png"))) == 2  # each LOD cached on its own
+
+    with db.session() as con:
+        con.execute("INSERT INTO pipeline_steps(step, fingerprint, status, started_at) VALUES ('stats', 'y', 'done', 'now')")
+    c.get(f"/api/tiles/4/{x}/{y}.png", params=q)
+    assert len(calls) == 2  # new data version: rendered again
+    tiles.clear_old_versions(tiles.data_version(db.connect()))
+    assert len(list((tmp_db / "tiles").rglob("*.png"))) == 1
+
+
+def test_empty_tile_is_not_written_and_bad_tiles_are_rejected(tmp_db, monkeypatch):
+    monkeypatch.setattr(settings, "TILE_DIR", str(tmp_db / "tiles"))
+    c = _client_with_bins()
+    r = c.get("/api/tiles/4/0/0.png", params={"from": "2025-08-01", "to": "2025-08-02"})
+    assert r.status_code == 200 and _png_alpha(r.content)[..., 3].max() == 0
+    assert not list((tmp_db / "tiles").rglob("*.png"))
+    assert c.get("/api/tiles/2/9/0.png", params={"from": "2025-08-01", "to": "2025-08-02"}).status_code == 404
+    assert c.get("/api/tiles/2/0/0.png", params={"from": "2025-08-01", "to": "2025-08-02", "layers": 9}).status_code == 422
+
+
+def test_prerender_writes_low_zoom_tiles_for_common_ranges(tmp_db, monkeypatch):
+    from server import tiles
+    monkeypatch.setattr(settings, "TILE_DIR", str(tmp_db / "tiles"))
+    _client_with_bins()
+    con = db.connect()
+    n = tiles.prerender(con, "2025-08-01", "2025-08-02", max_zoom=3)
+    assert n > 0
+    version = tiles.data_version(con)
+    x, y, _, _ = _tile_xy(3, 10.0, 20.0)
+    assert tiles.tile_path(version, "2025-08-01", "2025-08-02", 7, 3, x, y).exists()
+    assert tiles.prune(0) == 0 and not list((tmp_db / "tiles").rglob("*.png"))
 
 
 def test_incidents_and_meta(tmp_db):

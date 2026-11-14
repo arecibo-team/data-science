@@ -64,8 +64,6 @@ export interface PipelineStep {
 export interface Meta {
   version: number;
   generated_utc: string | null;
-  /** Grid cell sizes (degrees) the server can aggregate to. */
-  grid_cells: number[];
   enums: Enums;
   incidents: { count: number; confirmed: number; sources: string[] };
   days: Record<string, DayCounts>;
@@ -117,10 +115,4 @@ export interface PointsData {
   /** incident_id by 1-based incident code, for this response only. */
   incidents: string[];
   cols: Columns;
-}
-
-/** GET /api/grid: rows of [row, col, modis, viirs, confirmed modis, confirmed viirs]. */
-export interface GridData {
-  cell_deg: number;
-  cells: [number, number, number, number, number, number][];
 }

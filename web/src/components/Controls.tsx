@@ -5,22 +5,36 @@ interface Props {
   dates: string[];
   filters: Filters;
   onChange: (f: Filters) => void;
-  /** Counts in the loaded map view and date range, shown next to each layer. */
-  counts: LayerCounts;
+  /** Counts in the loaded map view and date range, shown next to each layer. Null in the heat overview. */
+  counts: LayerCounts | null;
   /** Visible detections and how many are matched by both sensors. Null in grid view. */
   stats: { total: number; matched: number } | null;
   /** True while the server is being asked for the current view. */
   loading: boolean;
-  /** "grid" when the view holds too many detections to draw one by one. */
-  mode: "points" | "grid";
+  /** Set when the view holds too many detections to draw one by one; heat tiles are shown instead. */
+  overview: { total: number } | null;
+  incidentCount: number;
   /** Pipeline steps while the server is still building data; null when idle. */
   pipeline: PipelineStep[] | null;
 }
 
-export function Controls({ dates, filters, onChange, counts, stats, loading, mode, pipeline }: Props) {
+const PRESETS: [string, number][] = [["3 days", 3], ["30 days", 30], ["1 year", 365], ["All", 0]];
+
+/** Range ending at the latest day. 0 days means everything. The server pre-renders 30 days, 1 year and all. */
+function preset(dates: string[], days: number): Pick<Filters, "from" | "to"> {
+  const to = dates[dates.length - 1];
+  if (!days) return { from: dates[0], to };
+  const start = new Date(`${to}T00:00:00Z`);
+  start.setUTCDate(start.getUTCDate() - (days - 1));
+  const want = start.toISOString().slice(0, 10);
+  return { from: dates.find((d) => d >= want) ?? to, to };
+}
+
+export function Controls({ dates, filters, onChange, counts, stats, loading, overview, incidentCount, pipeline }: Props) {
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch });
   const setLayer = (key: LayerKey, on: boolean) => set({ layers: { ...filters.layers, [key]: on } });
-  const grid = mode === "grid";
+  const grid = overview !== null;
+  const n = (v: number | undefined) => (v === undefined ? "–" : v.toLocaleString());
 
   // Any range is allowed. Keep it ordered by pulling the other end along if needed.
   const setFrom = (from: string) => set({ from, to: filters.to < from ? from : filters.to });
@@ -41,6 +55,11 @@ export function Controls({ dates, filters, onChange, counts, stats, loading, mod
 
       <fieldset>
         <legend>Date range (UTC)</legend>
+        <div className="presets">
+          {PRESETS.map(([label, days]) => (
+            <button key={label} type="button" onClick={() => set(preset(dates, days))}>{label}</button>
+          ))}
+        </div>
         <label>
           From
           <select value={filters.from} onChange={(e) => setFrom(e.target.value)}>
@@ -57,7 +76,7 @@ export function Controls({ dates, filters, onChange, counts, stats, loading, mod
           {loading
             ? "Loading from the server…"
             : grid
-              ? "Too many detections in view to draw one by one. Showing counts per cell; zoom in or shorten the range for points."
+              ? `${overview.total.toLocaleString()} detections in view: shown as a heat map (red = confirmed inside an incident). Zoom in or shorten the range for single points.`
               : "Showing every detection in view."}
         </p>
       </fieldset>
@@ -67,17 +86,17 @@ export function Controls({ dates, filters, onChange, counts, stats, loading, mod
         <label className="check">
           <input type="checkbox" checked={filters.layers.MODIS} onChange={(e) => setLayer("MODIS", e.target.checked)} />
           <span className="dot dot-modis" /> MODIS
-          <span className="muted"> {counts.MODIS.toLocaleString()}</span>
+          <span className="muted"> {n(counts?.MODIS)}</span>
         </label>
         <label className="check">
           <input type="checkbox" checked={filters.layers.VIIRS} onChange={(e) => setLayer("VIIRS", e.target.checked)} />
           <span className="dot dot-viirs" /> VIIRS
-          <span className="muted"> {counts.VIIRS.toLocaleString()}</span>
+          <span className="muted"> {n(counts?.VIIRS)}</span>
         </label>
         <label className="check">
           <input type="checkbox" checked={filters.layers.COMMON} onChange={(e) => setLayer("COMMON", e.target.checked)} />
           <span className="dot dot-common" /> COMMON
-          <span className="muted"> {counts.COMMON.toLocaleString()}</span>
+          <span className="muted"> {n(counts?.COMMON)}</span>
         </label>
         <p className="muted small">
           COMMON is NASA detections confirmed inside a European incident, from either sensor.
@@ -89,7 +108,7 @@ export function Controls({ dates, filters, onChange, counts, stats, loading, mod
             onChange={(e) => setLayer("INCIDENTS", e.target.checked)}
           />
           <span className="swatch" /> EU Incidents
-          <span className="muted"> {counts.INCIDENTS.toLocaleString()}</span>
+          <span className="muted"> {n(incidentCount)}</span>
         </label>
         <p className="muted small">
           Independent checks only, none derived from NASA data: Copernicus EMS wildfire mapping areas

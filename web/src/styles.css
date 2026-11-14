@@ -83,3 +83,6 @@ dd { margin: 0; }
 
 .steps { margin: 0; padding-left: 16px; }
 .step-failed { color: var(--error); }
+.presets { display: flex; gap: 4px; margin-bottom: 8px; }
+.presets button { flex: 1; padding: 4px 0; font: inherit; border: 1px solid var(--border); border-radius: 4px; background: var(--panel); color: var(--text); cursor: pointer; }
+.presets button:hover { border-color: var(--viirs); }
