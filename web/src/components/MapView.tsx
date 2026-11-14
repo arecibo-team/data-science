@@ -13,6 +13,8 @@ interface Props {
   incidents: IncidentFeature[];
   /** Bare-ground overlay URL template (server/soiltiles.py), or null/undefined when off. */
   soilUrl?: string | null;
+  /** Grey, faded base map so overlays stand out (the forecast view). */
+  muted?: boolean;
   /** Extra layers drawn inside the map, e.g. the forecast cells. */
   children?: ReactNode;
   onPick: (i: number | null) => void;
@@ -101,6 +103,7 @@ export function MapView(props: Props) {
   return (
     <MapContainer center={[46, 12]} zoom={5} preferCanvas className="map" worldCopyJump>
       <TileLayer
+        className={props.muted ? "base-muted" : undefined}
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
       />

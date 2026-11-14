@@ -7,7 +7,6 @@ import { TrainPanel } from "./TrainPanel";
 import { loadForecast, soilUrl, tileUrl, type Forecast } from "../data";
 
 const FUTURE_DAYS = 6;
-const CELL = 0.1; // degrees, the bin_day cell
 
 const HIT = "#16a34a";
 const MISS = "#dc2626";
@@ -19,10 +18,10 @@ function addDays(d: string, n: number): string {
   return t.toISOString().slice(0, 10);
 }
 
-/** Heat colour for a probability: yellow to red. */
-function probColor(p: number): string {
-  const t = Math.min(1, Math.max(0, p / 0.5));
-  return `hsl(${55 - 55 * t}, 95%, ${55 - 10 * t}%)`;
+/** Colour for a probability on a log scale between the alert threshold and 0.5: pale yellow to deep red. */
+function probColor(p: number, thr: number): string {
+  const t = Math.min(1, Math.max(0, Math.log(Math.max(p, 1e-6) / thr) / Math.log(0.5 / thr)));
+  return `hsl(${50 - 50 * t}, 95%, ${62 - 17 * t}%)`;
 }
 
 interface Tally {
@@ -52,27 +51,46 @@ function tally(f: Forecast | null): Tally {
   return t;
 }
 
-/** One rectangle per predicted cell, on a canvas renderer so thousands of cells stay fast. */
-function ForecastCells({ forecast }: { forecast: Forecast | null }) {
+const CELL_KM = 11;
+
+/** Pixel radius of a marker: the real size of a 0.1 degree cell, but never smaller than a visible dot. */
+function radiusFor(zoom: number, lat: number): number {
+  const mPerPx = (156543.03 * Math.cos((lat * Math.PI) / 180)) / 2 ** zoom;
+  return Math.min(40, Math.max(6, (CELL_KM * 1000) / 2 / mPerPx));
+}
+
+/** One marker per cell. Fixed minimum size so Europe-wide views still show them, outlined hits and misses, tooltips. */
+function ForecastCells({ forecast, showLow }: { forecast: Forecast | null; showLow: boolean }) {
   const map = useMap();
   useEffect(() => {
     if (!forecast) return;
-    const renderer = L.canvas({ padding: 0.3 });
     const group = L.featureGroup();
-    for (let i = 0; i < forecast.p.length; i++) {
+    const markers: L.CircleMarker[] = [];
+    // Low-probability cells first, so hits, misses and alerts are drawn on top.
+    const order = Array.from({ length: forecast.p.length }, (_, i) => i).sort((x, y) => forecast.p[x] - forecast.p[y]);
+    for (const i of order) {
       const kind = classify(forecast, i);
-      const color = kind === "hit" ? HIT : kind === "miss" ? MISS : kind === "false" ? FALSE_ALARM : probColor(forecast.p[i]);
-      const op = kind === "low" ? 0.15 + forecast.p[i] : kind === "predicted" ? 0.6 : 0.75;
+      if (kind === "low" && !showLow) continue;
       const la = forecast.lat[i], lo = forecast.lon[i];
-      L.rectangle([[la - CELL / 2, lo - CELL / 2], [la + CELL / 2, lo + CELL / 2]], {
-        renderer, stroke: false, fillColor: color, fillOpacity: Math.min(op, 0.85), interactive: false,
-      }).addTo(group);
+      const color = kind === "hit" ? HIT : kind === "miss" ? MISS : kind === "false" ? FALSE_ALARM : probColor(forecast.p[i], forecast.threshold);
+      const outlined = kind === "hit" || kind === "miss";
+      const m = L.circleMarker([la, lo], {
+        radius: radiusFor(map.getZoom(), la), color: outlined ? "#111" : color, weight: outlined ? 2 : 1,
+        fillColor: color, fillOpacity: kind === "low" ? 0.35 : 0.85, opacity: kind === "low" ? 0.4 : 0.95,
+      });
+      const label = { hit: "Hit: a COMMON fire followed", miss: "Miss: a COMMON fire followed, not predicted", false: "False alarm: no fire followed", predicted: "Alert, outcome not known yet", low: "Below the alert threshold" }[kind];
+      m.bindTooltip(`${label}<br>probability ${(forecast.p[i] * 100).toFixed(2)}% · ${la.toFixed(2)}, ${lo.toFixed(2)}`, { sticky: true });
+      markers.push(m);
+      m.addTo(group);
     }
+    const resize = () => markers.forEach((m) => m.setRadius(radiusFor(map.getZoom(), m.getLatLng().lat)));
+    map.on("zoomend", resize);
     group.addTo(map);
     return () => {
+      map.off("zoomend", resize);
       group.remove();
     };
-  }, [map, forecast]);
+  }, [map, forecast, showLow]);
   return null;
 }
 
@@ -95,6 +113,8 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [soil, setSoil] = useState<SoilState>({ on: false, cls: null });
   const [modelVersion, setModelVersion] = useState(0);
+  const [showLow, setShowLow] = useState(true);
+  const [showDetections, setShowDetections] = useState(true);
   const day = days[idx];
   const future = day > last;
 
@@ -130,14 +150,14 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   const onModelChanged = useCallback(() => setModelVersion((v) => v + 1), []);
   const t = useMemo(() => tally(forecast), [forecast]);
   const noop = useCallback(() => undefined, []);
-  const heat = future ? null : tileUrl(day, day, 7, generatedUtc);
+  const heat = future || !showDetections ? null : tileUrl(day, day, 7, generatedUtc);
 
   return (
     <div className="app">
       <aside className="sidebar">
         {header}
         <p className="muted small">
-          Orange, blue and red: detections on the selected day. Squares: where the model expects a COMMON fire
+          Orange, blue and red: detections on the selected day. Dots: where the model expects a COMMON fire
           (a detection inside an EU incident) in the days after it.
         </p>
 
@@ -175,12 +195,14 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
               <span><span className="dot" style={{ background: HIT }} /> Hit: predicted and a COMMON fire occurred <strong>{t.hit}</strong></span>
               <span><span className="dot" style={{ background: MISS }} /> Miss: fire occurred, not predicted <strong>{t.miss}</strong></span>
               <span><span className="dot" style={{ background: FALSE_ALARM }} /> No fire followed <strong>{t.falseAlarm}</strong></span>
-              <span><span className="dot" style={{ background: probColor(0.3) }} /> Predicted, outcome not known yet</span>
+              <span><span className="dot" style={{ background: probColor(0.3, forecast.threshold) }} /> Alert, outcome not known yet (deeper red = higher probability)</span>
             </div>
             <p className="muted small">
               {t.predicted.toLocaleString()} cells (0.1°) above the model's alert threshold {forecast.threshold.toFixed(4)} on this day.
-              Faint squares are lower probabilities.
+              Faint dots are below the threshold.
             </p>
+            <label className="check"><input type="checkbox" checked={showLow} onChange={(e) => setShowLow(e.target.checked)} /> Show cells below the threshold</label>
+            <label className="check"><input type="checkbox" checked={showDetections} onChange={(e) => setShowDetections(e.target.checked)} /> Show the day's detections</label>
           </fieldset>
         )}
         {error && <p className="error small">{error}</p>}
@@ -194,11 +216,12 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
           visible={null}
           tileUrl={heat}
           incidents={[]}
+          muted
           soilUrl={soil.on ? soilUrl(soil.cls) : null}
           onPick={noop}
           onView={noop}
         >
-          <ForecastCells forecast={forecast} />
+          <ForecastCells forecast={forecast} showLow={showLow} />
         </MapView>
       </main>
     </div>

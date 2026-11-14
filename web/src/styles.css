@@ -99,3 +99,5 @@ dd { margin: 0; }
 .runs li { margin-bottom: 6px; }
 .runs .active-run { border-left: 3px solid var(--viirs); padding-left: 6px; margin-left: -9px; }
 .soil-legend { margin-top: 6px; gap: 2px; font-size: 12px; }
+.base-muted { filter: grayscale(1) brightness(1.08) contrast(0.9); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .base-muted { filter: grayscale(1) invert(1) brightness(0.8) contrast(0.9); } }
