@@ -51,6 +51,7 @@ class Data:
     last: np.ndarray                 # (n_cand, T) int16 index of the latest common day <= day, or -1
     W: dict[str, np.ndarray] = field(default_factory=dict)
     train_end: int = 0               # day index of the last train day
+    hold: tuple[int, int] | None = None   # day indices of a held-out window, never trained on (see load)
 
     def day_index(self, date: str) -> int:
         return (dt.date.fromisoformat(date) - self.start).days
@@ -59,7 +60,9 @@ class Data:
         return (self.start + dt.timedelta(days=int(i))).isoformat()
 
 
-def load(train_end: str, con=None, label: str = "confirmed") -> Data | None:
+def load(train_end: str, con=None, label: str = "confirmed", holdout: tuple[str, str] | None = None) -> Data | None:
+    """holdout=(first, last) dates: that window is removed from training, and from the choice of candidate cells, so a
+    cell that only ever burned inside it is unknown to the model. Used to benchmark against one event."""
     own = con is None
     con = con or db.connect(readonly=True)
     try:
@@ -87,7 +90,12 @@ def load(train_end: str, con=None, label: str = "confirmed") -> Data | None:
     Y = C if label == "confirmed" else B
     te = (dt.date.fromisoformat(train_end) - start).days
     te = min(te, t - 1)
-    ever = (B[:n, : te + 1].any(axis=1)) | (C[:n, : te + 1].any(axis=1))
+    hold = None
+    seen = np.ones(te + 1, bool)
+    if holdout:
+        hold = tuple((dt.date.fromisoformat(x) - start).days for x in holdout)
+        seen[max(hold[0], 0): hold[1] + 1] = False
+    ever = (B[:n, : te + 1][:, seen].any(axis=1)) | (C[:n, : te + 1][:, seen].any(axis=1))
     cand = np.flatnonzero(ever)
     if not len(cand):
         return None
@@ -124,7 +132,7 @@ def load(train_end: str, con=None, label: str = "confirmed") -> Data | None:
         wi = np.where(wkeys[pos] == ck, pos, -1)
     idx = np.where(B[cand] > 0, np.arange(t, dtype=np.int16)[None, :], np.int16(-1))
     last = np.maximum.accumulate(idx, axis=1)
-    return Data(start, t, keys, cand, B, MV, HI, LO, C, Y, nb, static, wi, last, W, te)
+    return Data(start, t, keys, cand, B, MV, HI, LO, C, Y, nb, static, wi, last, W, te, hold)
 
 
 def _cum(a: np.ndarray) -> np.ndarray:
@@ -211,6 +219,8 @@ def training_rows(d: Data, horizon: int, split: str, neg_keep: float = 0.1, seed
     else:
         sel = (days >= MIN_DAY) & (days + horizon <= d.train_end)
     sel &= (days >= MIN_DAY) & (days + horizon < d.n_days)
+    if d.hold and split != "test":    # drop the window and every day whose label window reaches into it
+        sel &= ~((days >= d.hold[0] - horizon) & (days <= d.hold[1]))
     mask = act & sel[None, :]
     if split != "test":
         mask &= lab | (rng.random(mask.shape) < neg_keep)

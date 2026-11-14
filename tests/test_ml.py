@@ -174,3 +174,32 @@ def test_weather_features_flow_into_matrix(tmp_db):
     assert len([f for f in features.FEATURES if f in features.WEATHER_ACTIVE]) == 6
     assert features.select(X, features.FEATURES).shape[1] == len(features.FEATURES)
     assert features.select(X, features.FEATURES_V1).shape[1] == len(features.FEATURES_V1)
+
+
+def test_holdout_event_is_never_trained_on_and_is_replayed(tmp_db):
+    _fill_bins()
+    event = {"name": "synthetic", "first": "2025-11-01", "last": "2025-11-20", "bbox": [9.0, -51.0, 11.0, -48.0],
+             "spike": ["2025-11-08", "2025-11-12"]}
+    d = features.load(TRAIN_END, holdout=(event["first"], event["last"]))
+    h0, h1 = d.hold
+    for split in ("train", "val"):
+        _, _, (pos, di) = features.training_rows(d, 3, split)
+        assert not ((di >= h0 - 3) & (di <= h1)).any()      # nothing in or reaching into the window
+    _, _, (pos, di) = features.training_rows(d, 3, "train")
+    assert ((di < h0 - 3) | (di > h1)).all() and (di > h1).any() and (di < h0 - 3).any()
+
+    run_id = train.create_run({"rounds": 8, "min_data_in_leaf": 5, "num_leaves": 7, "holdout_event": event})
+    import threading
+    train.train(run_id, lambda e: None, threading.Event())
+    run = train.get_run(run_id)
+    assert run["status"] == "done", run["message"]
+    bm = run["metrics"]["benchmark"]
+    assert bm["event"]["name"] == "synthetic" and len(bm["days"]) >= 15
+    assert bm["europe"]["positives"] > 0 and set(bm["lead"]) == {"new", "burning"}
+    assert all(0 <= v <= bm["lead"][g]["cells"] for g in bm["lead"] for v in bm["lead"][g]["flagged"].values())
+    assert bm["lead_days"] == [1, 2, 3, 5, 7]                # leads that stay inside the held-out window
+
+
+def test_new_runs_hold_out_the_configured_event(tmp_db):
+    run_id = train.create_run({"rounds": 3})
+    assert train.get_run(run_id)["params"]["holdout_event"]["first"] == settings.HOLDOUT_EVENT["first"]

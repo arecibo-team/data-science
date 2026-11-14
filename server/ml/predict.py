@@ -32,14 +32,14 @@ def _model(run: dict) -> lgb.Booster:
     return b
 
 
-def _features(train_end: str, label: str) -> features.Data | None:
+def _features(train_end: str, label: str, event: dict | None) -> features.Data | None:
     global _data
     with db.session() as con:
-        ver = (train_end, label, con.execute("SELECT COALESCE(MAX(id), 0) FROM pipeline_steps WHERE status='done'").fetchone()[0],
+        ver = (train_end, label, event and event["first"], con.execute("SELECT COALESCE(MAX(id), 0) FROM pipeline_steps WHERE status='done'").fetchone()[0],
                con.execute("SELECT COUNT(*) FROM weather_grid").fetchone()[0])
     if _data and _data[0] == ver:
         return _data[1]
-    d = features.load(train_end, label=label)
+    d = features.load(train_end, label=label, holdout=(event["first"], event["last"]) if event else None)
     _data = (ver, d)
     return d
 
@@ -52,7 +52,7 @@ def forecast(date: str) -> dict | None:
         return None
     p = run["params"]
     with _lock:
-        d = _features(p["train_end"], p.get("label", "confirmed"))
+        d = _features(p["train_end"], p.get("label", "confirmed"), p.get("holdout_event"))
         if d is None:
             return None
         pos, di, X = features.predict_rows(d, date)

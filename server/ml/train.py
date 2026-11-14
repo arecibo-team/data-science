@@ -14,10 +14,10 @@ from typing import Callable
 
 import lightgbm as lgb
 import numpy as np
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, precision_recall_curve
 
 from .. import db, settings
-from . import features
+from . import benchmark, features
 
 log = logging.getLogger("server.ml")
 NEG_KEEP = 0.1
@@ -39,7 +39,7 @@ def calibrate(p: np.ndarray, neg_keep: float = NEG_KEEP) -> np.ndarray:
 
 def create_run(params: dict) -> int:
     p = {**DEFAULTS, "horizon": settings.HORIZON, "train_end": settings.TRAIN_END, "neg_keep": NEG_KEEP, "label": settings.LABEL, "early_stopping": 40,
-         "features": features.FEATURES, **params}
+         "features": features.FEATURES, "holdout_event": settings.HOLDOUT_EVENT, **params}
     with db.session() as con:
         cur = con.execute("INSERT INTO model_runs (status, params, started_at, rounds_total) VALUES ('running', ?, ?, ?)",
                           (json.dumps(p), now(), int(p["rounds"])))
@@ -101,7 +101,9 @@ def train(run_id: int, emit: Callable[[dict], None], stop: threading.Event, resu
     horizon, history = p["horizon"], run["loss_history"] if resume else []
     try:
         emit({"type": "start", "run": run_id, "total": run["rounds_total"], "resumed": resume})
-        data = features.load(p["train_end"], label=p.get("label", "confirmed"))
+        event = p.get("holdout_event")
+        data = features.load(p["train_end"], label=p.get("label", "confirmed"),
+                             holdout=(event["first"], event["last"]) if event else None)
         if data is None:
             raise RuntimeError("no common-fire data to train on; run the pipeline first")
         Xt, yt, _ = features.training_rows(data, horizon, "train", p["neg_keep"])
@@ -154,6 +156,11 @@ def train(run_id: int, emit: Callable[[dict], None], stop: threading.Event, resu
         with db.session() as con:
             con.execute("DELETE FROM model_checkpoints WHERE run_id=? AND is_final=0", (run_id,))
         metrics = evaluate(booster, data, p, Xv, yv)
+        if event:   # replay the held-out event with this very model
+            try:
+                metrics["benchmark"] = benchmark.replay(data, booster, metrics["threshold"], horizon, event, p["features"])
+            except Exception:  # noqa: BLE001 - a failed replay must not lose the trained model
+                log.exception("event replay failed")
         with db.session() as con:
             con.execute("UPDATE model_runs SET status='done', finished_at=?, metrics=?, rounds_done=? WHERE id=?",
                         (now(), json.dumps(metrics), max(booster.current_iteration(), history[-1]["round"] if history else 0), run_id))
@@ -166,13 +173,18 @@ def train(run_id: int, emit: Callable[[dict], None], stop: threading.Event, resu
         emit({"type": "error", "run": run_id, "message": str(exc)})
 
 
-def evaluate(booster, data, p: dict, Xv, yv) -> dict:  # Xv is already the run's own columns
-    """Score on the held-out days (after train_end), at the threshold that maximises F1 on the validation rows."""
-    pv = calibrate(booster.predict(Xv), p["neg_keep"])
-    thr = best_threshold(pv, yv, base=None)
+def evaluate(booster, data, p: dict, Xv=None, yv=None) -> dict:
+    """Score the days after train_end at the alert threshold that maximises F1 on the validation days.
+
+    The threshold is picked on the validation days with every negative kept (training drops 90% of them), so it
+    reflects how rare real fires are. Xv and yv are unused; kept so callers need not change."""
+    names = p.get("features")
+    Xf, yf, _ = features.training_rows(data, p["horizon"], "val", 1.0)
+    pv = calibrate(booster.predict(features.select(Xf, names)), p["neg_keep"])
+    thr = best_threshold(pv, yf)
     out = {"threshold": float(thr), "horizon": p["horizon"], "label": p.get("label"), "train_end": p["train_end"]}
     Xs, ys, _ = features.training_rows(data, p["horizon"], "test")
-    Xs = features.select(Xs, p.get("features"))
+    Xs = features.select(Xs, names)
     out["test_rows"] = int(len(ys))
     if len(ys) and ys.sum() > 0:
         ps = calibrate(booster.predict(Xs), p["neg_keep"])
@@ -183,14 +195,10 @@ def evaluate(booster, data, p: dict, Xv, yv) -> dict:  # Xv is already the run's
     return out
 
 
-def best_threshold(p, y, base) -> float:
+def best_threshold(p, y, base=None) -> float:
+    """Probability threshold with the best F1 over every cut of the scores."""
     if not len(y) or y.sum() == 0:
         return 0.5
-    best, best_f = 0.5, -1.0
-    for t in np.quantile(p, np.linspace(0.05, 0.99, 40)):
-        pred = p >= t
-        tp = (pred & (y == 1)).sum()
-        f = 2 * tp / max(pred.sum() + y.sum(), 1)
-        if f > best_f:
-            best, best_f = float(t), f
-    return best
+    prec, rec, thr = precision_recall_curve(y, p)
+    f = 2 * prec[:-1] * rec[:-1] / np.maximum(prec[:-1] + rec[:-1], 1e-12)
+    return float(thr[int(np.argmax(f))])

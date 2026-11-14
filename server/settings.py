@@ -52,3 +52,11 @@ CHECKPOINT_EVERY = int(os.environ.get("FIRMS_CHECKPOINT_EVERY", "25"))
 LABEL = os.environ.get("FIRMS_LABEL", "confirmed")
 # Parallel NASA POWER requests of the weather step. Lower it if the service answers 429.
 WEATHER_WORKERS = int(os.environ.get("FIRMS_WEATHER_WORKERS", "4"))
+
+# An event held out of every training run, and replayed after each run to see whether the model would have seen
+# it coming. The window is removed for all of Europe; bbox is W,S,E,N of the region reported on, spike is the
+# first and last day of the fire surge inside the window. FIRMS_HOLDOUT=0 trains on everything.
+HOLDOUT_EVENT = None if os.environ.get("FIRMS_HOLDOUT", "1") == "0" else {
+    "name": "Greece, Aug 2025 (Chios, Epirus)", "first": "2025-08-01", "last": "2025-08-20",
+    "bbox": [19.3, 34.5, 28.4, 41.8], "spike": ["2025-08-11", "2025-08-14"],
+}
