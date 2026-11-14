@@ -108,9 +108,9 @@ def test_custom_weights_all_zero(client):
 
 def test_more_hazards_lower_power(client):
     base = {"burned_ha": 20000, "area_km2": 130000, "population": 10400000, "firefighters": 17000,
-            "spending_meur": 900, "stations": 500, "hazard_load": 0}
+            "spending_meur": 900, "stations": 500, "hazard_load": 0, "major_load": 0}
     calm = client.post("/predict", json=base).json()
-    shocked = client.post("/predict", json={**base, "hazard_load": 300}).json()
+    shocked = client.post("/predict", json={**base, "hazard_load": 300, "major_load": 27}).json()
     assert shocked["power"] < calm["power"]
     assert shocked["amber"] > calm["amber"]
 

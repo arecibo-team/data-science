@@ -14,6 +14,7 @@ from . import EU27, SEED
 FEATURES = {
     "burned_share_pct": ("danger", +1, True, "Burned area"),
     "hazard_density": ("hazards", +1, True, "Concurrent hazards"),
+    "major_hazards": ("hazards", +1, True, "Major hazards (Orange/Red)"),
     "ff_per_100k": ("workforce", -1, True, "Professional firefighters"),
     "volunteers_per_100k": ("workforce", -1, True, "Volunteer firefighters"),
     "spend_per_capita": ("capability", -1, True, "Fire-protection spending"),
@@ -32,6 +33,7 @@ def active_features(panel: pd.DataFrame) -> list[str]:
         feats.remove("volunteers_per_100k")
     if "hazard_load" not in panel or panel["hazard_load"].notna().sum() == 0:
         feats.remove("hazard_density")
+        feats.remove("major_hazards")
     return feats
 
 
@@ -58,6 +60,7 @@ def compute_rates(panel: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame(index=p.index)
     out["burned_share_pct"] = p["burned_ha"] / p["area_km2"]          # ha / km2 = % of land (1 km2 = 100 ha)
     out["hazard_density"] = p.get("hazard_load", np.nan) / p["area_km2"] * 1e5
+    out["major_hazards"] = p.get("major_load", np.nan)
     out["ff_per_100k"] = p["firefighters"] / p["population"] * 1e5
     out["volunteers_per_100k"] = p.get("volunteers", np.nan) / p["population"] * 1e5
     out["spend_per_capita"] = p["spending_meur"] * 1e6 / p["population"]
@@ -99,6 +102,10 @@ class Preprocessor:
         scaled = self._scale(X)
         filled = self.imputer.transform(scaled.to_numpy())
         return pd.DataFrame(np.clip(filled, 0, 1), index=X.index, columns=self.features)
+
+    def inverse(self, feature: str, scaled) -> np.ndarray:
+        v = self.lo[feature] + np.asarray(scaled, dtype=float) * (self.hi[feature] - self.lo[feature])
+        return np.expm1(v) if FEATURES[feature][2] else v
 
     def missing_mask(self, X: pd.DataFrame) -> pd.DataFrame:
         return X[self.features].isna()

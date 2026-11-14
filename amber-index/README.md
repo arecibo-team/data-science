@@ -12,7 +12,7 @@ weight-slider endpoint are served by a FastAPI service for a front-end.
 | Pillar | Direction | Indicators (all scaled 0–1) |
 |---|---|---|
 | Danger | raises | burned area as % of land |
-| Hazards | raises | GDACS alerts in the country (floods, earthquakes, droughts, storms, volcanoes, wildfires) per 100,000 km², weighted Green 0.5, Orange 3, Red 9 |
+| Hazards | raises | GDACS alerts in the country (floods, earthquakes, droughts, storms, volcanoes, wildfires): all alerts per 100,000 km² weighted Green 0.5, Orange 3, Red 9, plus major (Orange/Red) alerts |
 | Workforce | lowers | professional firefighters per 100k inhabitants (+ volunteers per 100k if `data/manual/volunteers.csv` is filled) |
 | Capability | lowers | fire-protection spending per inhabitant; fire stations per 1,000 km² and per 100k inhabitants |
 
@@ -21,8 +21,14 @@ weights summing to 1, `c` is the median of the training years and `k` maps their
 Preprocessing (log1p, 5th/95th percentile winsorising, min-max) and the `IterativeImputer` are fitted on 2014–2020 only.
 
 **Power** (0–100) estimates the firefighting capacity a country can actually use: readiness reduced by the hazard
-pressure it is under at the same time, `power = 100 · readiness · (1 − 0.5 · pressure)`, where pressure blends the danger
-and hazards pillars. A country with strong services but many simultaneous hazards has less power to spare.
+pressure it is under at the same time, `power = 100 · readiness · (1 − 0.5 · pressure)`, with pressure = ½ danger + ½ hazards.
+A country with strong services but many simultaneous hazards has less power to spare.
+
+**Simulations** force hazard events on any country. The annual hazard indicators rise, and the emergency ties up crews:
+each event demands firefighters by severity (Green 50, Orange 500, Red 2,000, an assumption), and power falls by the share
+of the national workforce that demand consumes (capped at 95%; the rest is reported as unmet demand). In the latest year a
+multi-hazard emergency (Red flood, Red wildfire, Orange earthquake) drops the three strongest countries by 4 to 11 places;
+Cyprus, the smallest service, is left with about 3,200 firefighters of unmet demand.
 
 ## Run the notebook
 
@@ -58,6 +64,8 @@ curl -X POST localhost:8000/predict -H 'Content-Type: application/json' \
   -d '{"burned_ha": 25000, "area_km2": 238398, "population": 19000000, "firefighters": null, "spending_meur": 900, "stations": null}'
 curl -X POST localhost:8000/score/custom-weights -H 'Content-Type: application/json' \
   -d '{"year": 2024, "danger": 2, "workforce": 1, "capability": 1}'
+curl -X POST localhost:8000/simulate -H 'Content-Type: application/json' \
+  -d '{"shocks": [{"iso2": "CZ", "preset": "multi_hazard"}, {"iso2": "CY", "events": [{"type": "WF", "alert": "Red", "count": 1}]}]}'
 ```
 
 | Endpoint | Returns |
@@ -68,6 +76,8 @@ curl -X POST localhost:8000/score/custom-weights -H 'Content-Type: application/j
 | `GET /scores/{iso2}?year=` | one country with its top 3 reasons, e.g. "High burned area pushes the score up 12 pts" |
 | `POST /predict` | raw indicators (any may be null) → predicted next-year burned share, score, band, SHAP contributions |
 | `POST /score/custom-weights` | pillar weights → recomputed scores and bands (for weight sliders) |
+| `GET /simulate/presets` | named hazard shocks (major flood, earthquake, wildfire season, drought, multi-hazard) |
+| `POST /simulate` | force hazards on countries → power, ranks, crew demand and unmet demand before and after |
 
 Tests: `.venv/bin/python -m pytest`.
 

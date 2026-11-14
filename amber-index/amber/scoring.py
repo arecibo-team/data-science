@@ -114,6 +114,7 @@ def gap_of_row(x: pd.Series, weights: dict) -> float:
 REASON_PHRASES = {  # feature -> (phrase when the scaled value is high, phrase when low)
     "burned_share_pct": ("High burned area", "Low burned area"),
     "hazard_density": ("Many concurrent hazards", "Few concurrent hazards"),
+    "major_hazards": ("Major disasters under way", "No major disasters"),
     "ff_per_100k": ("Many firefighters per inhabitant", "Few firefighters per inhabitant"),
     "volunteers_per_100k": ("Many volunteer firefighters", "Few volunteer firefighters"),
     "spend_per_capita": ("High fire-protection spending", "Low fire-protection spending"),

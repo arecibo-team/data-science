@@ -271,10 +271,12 @@ def hazard_load(events: pd.DataFrame, years: list[int]) -> pd.DataFrame:
         if pd.isna(e.start):
             continue
         for y in range(max(e.start.year, years[0]), min(e.end.year, years[-1]) + 1):
-            rows.append((e.iso2, y, e.eventtype, ALERT_WEIGHT.get(e.alertlevel, 1.0)))
-    df = pd.DataFrame(rows, columns=["iso2", "year", "eventtype", "weight"])
+            rows.append((e.iso2, y, e.eventtype, ALERT_WEIGHT.get(e.alertlevel, 1.0), e.alertlevel in ("Orange", "Red")))
+    df = pd.DataFrame(rows, columns=["iso2", "year", "eventtype", "weight", "major"])
+    df["major_weight"] = df["weight"].where(df["major"], 0.0)
     grid = pd.MultiIndex.from_product([list(EU27), years], names=["iso2", "year"]).to_frame(index=False)
-    load = df.groupby(["iso2", "year"]).agg(hazard_load=("weight", "sum"), hazard_events=("weight", "size")).reset_index()
+    load = df.groupby(["iso2", "year"]).agg(hazard_load=("weight", "sum"), hazard_events=("weight", "size"),
+                                            major_load=("major_weight", "sum"), major_events=("major", "sum")).reset_index()
     by_type = df.pivot_table(index=["iso2", "year"], columns="eventtype", values="weight", aggfunc="size", fill_value=0)
     by_type.columns = [f"events_{HAZARD_TYPES.get(c, c).replace(' ', '_')}" for c in by_type.columns]
     out = grid.merge(load, on=["iso2", "year"], how="left").merge(by_type.reset_index(), on=["iso2", "year"], how="left")

@@ -5,11 +5,12 @@ import pandas as pd
 ALPHA = 0.5
 
 
-def hazard_pressure(P: pd.DataFrame, weights: dict) -> pd.Series:
-    w = weights["pillar"]
-    wd, wh = w.get("danger", 0.0), w.get("hazards", 0.0)
+PRESSURE_WEIGHTS = {"danger": 0.5, "hazards": 0.5}
+
+
+def hazard_pressure(P: pd.DataFrame, weights: dict | None = None) -> pd.Series:
     h = P["hazards"] if "hazards" in P else 0.0
-    return (wd * P["danger"] + wh * h) / ((wd + wh) or 1.0)
+    return PRESSURE_WEIGHTS["danger"] * P["danger"] + PRESSURE_WEIGHTS["hazards"] * h
 
 
 def readiness(P: pd.DataFrame, weights: dict) -> pd.Series:

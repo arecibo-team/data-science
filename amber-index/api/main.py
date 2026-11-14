@@ -120,6 +120,7 @@ class PredictRequest(BaseModel):
     spending_meur: float | None = Field(None, ge=0)
     stations: float | None = Field(None, ge=0)
     hazard_load: float | None = Field(None, ge=0, description="Alert-weighted GDACS events this year: Green 0.5, Orange 3, Red 9")
+    major_load: float | None = Field(None, ge=0, description="Alert-weighted Orange and Red GDACS events this year")
 
 
 class ShapItem(BaseModel):
@@ -290,6 +291,10 @@ class SimRow(BaseModel):
     amber_after: float
     band_before: str
     band_after: str
+    firefighters: float
+    crew_demand: float
+    committed_share: float
+    unmet_demand: float
 
 
 class SimulateResponse(BaseModel):
@@ -300,7 +305,9 @@ class SimulateResponse(BaseModel):
 def _raw_table(year: int) -> pd.DataFrame:
     df = STATE["df"][STATE["df"].year == year]
     raw = pd.DataFrame([{**{f: (np.nan if r["raw"].get(f) is None else r["raw"][f]) for f in STATE["features"]},
-                         "area_km2": r["area_km2"], "hazard_load": r["hazard_load"]} for r in df.to_dict("records")],
+                         "area_km2": r["area_km2"], "hazard_load": r["hazard_load"], "major_load": r["major_load"],
+                         "firefighters_est": r["firefighters_est"]}
+                        for r in df.to_dict("records")],
                        index=df["iso2"].to_list())
     return raw
 
@@ -326,5 +333,7 @@ def simulate(body: SimulateRequest):
                    power_after=round(r.power_after, 2), power_change=round(r.power_change, 2),
                    power_rank_before=int(r.power_rank_before), power_rank_after=int(r.power_rank_after),
                    rank_change=int(r.rank_change), amber_before=round(r.amber_before, 2), amber_after=round(r.amber_after, 2),
-                   band_before=r.band_before, band_after=r.band_after) for i, r in res.iterrows()]
+                   band_before=r.band_before, band_after=r.band_after, firefighters=round(r.firefighters),
+                   crew_demand=r.crew_demand, committed_share=round(r.committed_share, 4),
+                   unmet_demand=round(r.unmet_demand)) for i, r in res.iterrows()]
     return SimulateResponse(year=y, rows=rows)
