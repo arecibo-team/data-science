@@ -38,28 +38,31 @@ def country_ids(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
     return out
 
 
-def series(d: features.Data, booster, names: list[str], horizon: int, neg_keep: float, chunk: int = 60) -> dict:
-    """Per day and country: expected fire cells (sum p), cells at risk, and cells that really burned in the window."""
-    lat = d.static[:, 0]
-    lon = d.static[:, 1]
-    cid = country_ids(lat, lon)
+SPAN_DAYS = 800     # days scored for the country map: about two seasons, enough to rank a day against its own year
+
+
+def series(d: features.Data, booster, names: list[str], horizon: int, neg_keep: float, span: int = SPAN_DAYS) -> dict:
+    """Per day and country: expected fire cells (sum of p over every candidate cell), cells with recent fires, and cells
+    that really burned in the window. Only the last `span` days are scored (every cell, every day)."""
+    cid = country_ids(d.static[:, 0], d.static[:, 1])
     names_c, _ = countries()
     n_c = len(names_c)
-    act, lab = features.active_mask(d), features.label_mask(d, horizon)
+    act = features.active_mask(d)
     T = d.n_days
+    first = max(features.MIN_DAY, T - span - features.BLOCK)
     expected = np.zeros((T, n_c), np.float32)
     active = np.zeros((T, n_c), np.int32)
     burned = np.zeros((T, n_c), np.int32)
-    for a in range(features.MIN_DAY, T, chunk):
-        days = np.arange(a, min(a + chunk, T))
-        pos, ci = np.nonzero(act[:, days])
-        if not len(pos):
-            continue
-        di = days[ci]
+    ok = cid >= 0
+    n_cells = len(d.cand)
+    for a in range(first // features.BLOCK * features.BLOCK, T, features.BLOCK):     # aligned blocks build fastest
+        days = np.arange(max(a, first), min(a + features.BLOCK, T))
+        pos = np.tile(np.flatnonzero(ok), len(days))
+        di = np.repeat(days, int(ok.sum()))
         p = train.calibrate(booster.predict(features.select(features.build(d, pos, di), names)), neg_keep)
-        ok = cid[pos] >= 0
-        np.add.at(expected, (di[ok], cid[pos][ok]), p[ok])
-        np.add.at(active, (di[ok], cid[pos][ok]), 1)
+        k = (di - days[0]) * n_c + cid[pos]
+        expected[days] = np.bincount(k, weights=p, minlength=len(days) * n_c).reshape(len(days), n_c)
+        active[days] = np.bincount(k, weights=act[pos, di], minlength=len(days) * n_c).reshape(len(days), n_c)
     # real: every cell with a confirmed fire in D+1..D+horizon, scored or not
     kc = d.keys
     clat, clon = (kc // features.KEY + 0.5) * db.BIN_DEG - 90, (kc % features.KEY + 0.5) * db.BIN_DEG - 180
@@ -73,7 +76,7 @@ def series(d: features.Data, booster, names: list[str], horizon: int, neg_keep: 
         m = call == c
         if m.any():
             burned[:, c] = w[m].sum(axis=0)
-    return {"countries": names_c, "expected": expected, "active": active, "burned": burned}
+    return {"countries": names_c, "expected": expected, "active": active, "burned": burned, "first": first}
 
 
 def store(run_id: int, d: features.Data, s: dict, horizon: int) -> int:
@@ -82,9 +85,8 @@ def store(run_id: int, d: features.Data, s: dict, horizon: int) -> int:
     E, A, B = s["expected"], s["active"], s["burned"]
     rows = []
     for c, name in enumerate(s["countries"]):
-        days = np.arange(features.MIN_DAY, d.n_days)
-        days = days[A[days, c] > 0]
-        if not len(days):
+        days = np.arange(s.get("first", features.MIN_DAY), d.n_days)
+        if not (E[days, c] > 0).any():
             continue
         hist = np.sort(E[days, c])
         ranked = E[days, c].max() >= 1.0

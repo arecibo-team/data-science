@@ -56,8 +56,9 @@ def test_context_loads_and_is_idempotent(tmp_db):
 def test_features_have_no_future_and_label_window(tmp_db):
     _fill_bins()
     d = features.load(TRAIN_END)
-    assert d is not None and len(d.cand) == 30          # the single-sensor cell is not a candidate
+    assert d is not None and len(d.cand) == 31          # every cell with a detection is scored, the single-sensor one too
     lab = features.label_mask(d, 3)
+    assert not lab[d.cand == len(d.keys) - 1].any()     # ...but it never counts as a fire with the default label
     assert not lab[:, -3:].any()                       # days without a full horizon have no label
     pos = np.array([0, 1])
     di = np.array([60, 60])
@@ -163,13 +164,14 @@ def test_weather_features_flow_into_matrix(tmp_db):
     _fill_bins()
     d0 = dt.date(2025, 9, 1)
     rows = [(40, 190, (d0 + dt.timedelta(days=i)).isoformat(), 15.0 + i % 7, 60.0, 3.0,
-             0.0 if i % 5 else 4.0, 0.3, 0.4, 0.5) for i in range(170)]
+             0.0 if i % 5 else 4.0, 0.3, 0.4, 0.5, 22.0 + i % 7, 6.0 + i % 3) for i in range(170)]
     with db.session() as con:
-        con.executemany("INSERT INTO weather_grid VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+        con.executemany("INSERT INTO weather_grid VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     d = features.load(TRAIN_END)
     X = features.build(d, np.array([0]), np.array([60]))
     col = dict(zip(features.FEATURES_ALL, X[0]))
     assert np.isfinite(col["vpd"]) and np.isfinite(col["dry_days"]) and col["dry_days"] <= 60
+    assert all(np.isfinite(col[f]) for f in features.FORECAST)    # the weather of the next 3 days
     assert not any("fwi" in n or "ffmc" in n for n in features.FEATURES_ALL)
     assert len([f for f in features.FEATURES if f in features.WEATHER_ACTIVE]) == 6
     assert features.select(X, features.FEATURES).shape[1] == len(features.FEATURES)
@@ -183,9 +185,9 @@ def test_holdout_event_is_never_trained_on_and_is_replayed(tmp_db):
     d = features.load(TRAIN_END, holdout=(event["first"], event["last"]))
     h0, h1 = d.hold
     for split in ("train", "val"):
-        _, _, (pos, di) = features.training_rows(d, 3, split)
+        _, _, _, (pos, di) = features.training_rows(d, 3, split)
         assert not ((di >= h0 - 3) & (di <= h1)).any()      # nothing in or reaching into the window
-    _, _, (pos, di) = features.training_rows(d, 3, "train")
+    _, _, w, (pos, di) = features.training_rows(d, 3, "train")
     assert ((di < h0 - 3) | (di > h1)).all() and (di > h1).any() and (di < h0 - 3).any()
 
     run_id = train.create_run({"rounds": 8, "min_data_in_leaf": 5, "num_leaves": 7, "holdout_event": event})
@@ -224,3 +226,31 @@ def test_country_lookup_score_and_risk_endpoint(tmp_db):
         far = client.get("/api/risk", params={"date": "2030-01-01"}).json()
         assert far["feature_date"] == "2025-08-20" and not far["complete"] and far["countries"][0]["burned"] is None
         assert client.get("/api/regions").json()["features"]
+
+
+def test_sampled_negatives_are_weighted_back_to_every_cell_day(tmp_db):
+    _fill_bins()
+    d = features.load(TRAIN_END, label="both")
+    tot_w, tot_pos = 0.0, 0
+    for split in ("train", "val"):
+        _, y, w, _ = features.training_rows(d, 3, split, 0.5, 0.5)
+        assert w[y == 1].tolist() == [1.0] * int(y.sum())         # positives are never down-weighted
+        tot_w += float(w[y == 0].sum()); tot_pos += int(y.sum())
+    days = np.arange(d.n_days)
+    n_days = int(((days >= features.MIN_DAY) & (days + 3 <= d.train_end) & (days + 3 < d.n_days)).sum())
+    assert abs(tot_w - (len(d.cand) * n_days - tot_pos)) / (len(d.cand) * n_days) < 0.05
+
+
+def test_forecast_weather_comes_from_the_forecast_table_after_the_reanalysis(tmp_db):
+    _fill_bins()
+    d0 = dt.date(2025, 9, 1)
+    rows = [(40, 190, (d0 + dt.timedelta(days=i)).isoformat(), 15.0, 60.0, 3.0, 0.0, .3, .4, .5, 20.0, 5.0) for i in range(100)]
+    fc = [(40, 190, (dt.date(2026, 2, 15) + dt.timedelta(days=i)).isoformat(), "x", 10.0, 30.0, 4.0, 25.0, 0.0, 40.0) for i in range(7)]
+    with db.session() as con:
+        con.executemany("INSERT INTO weather_grid VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        con.executemany("INSERT INTO weather_forecast VALUES (?,?,?,?,?,?,?,?,?,?)", fc)
+    d = features.load(TRAIN_END)
+    last = d.n_days - 1                                          # 2026-02-15: the day the forecast starts
+    X = features.build(d, np.array([0]), np.array([last]))
+    col = dict(zip(features.FEATURES_ALL, X[0]))
+    assert col["fc_wsx"] == 25.0 and col["fc_prec"] == 0.0       # next days are the forecast, not a carried-over day

@@ -151,8 +151,21 @@ and the cells where a LightGBM model expects a COMMON fire (a detection inside a
   `interrupted` and Resume continues from its checkpoint. Predictions use the newest `done` run.
 - Train on days up to `FIRMS_TRAIN_END` (2025-12-31), with a random 20% of those cell-days for validation;
   every later day is the test set (PR-AUC, precision and recall are shown per run).
-- `FIRMS_LABEL=confirmed` (default, the UI's COMMON layer) or `both` (seen by MODIS and VIIRS).
-- Features: fire history per 0.1 degree cell (`bin_day`), neighbours, season, CORINE bare ground, and daily NASA POWER
-  weather on a 1 degree grid. The `context` step embeds `context-data/` into `soil_cells` and `soil_squares`.
-  The `weather` step is slow on first run and resumable (`FIRMS_WEATHER=0` or `PIPELINE_SKIP=weather` skips it).
-- API: `/api/model/{train,stop,resume/{id},runs,stream}`, `/api/forecast?date=`, `/api/soil/tiles/{z}/{x}/{y}.png?cls=`.
+- `FIRMS_LABEL=both` (default: a fire seen by MODIS and VIIRS, consistent for every year since 2012) or `confirmed`
+  (the UI's COMMON layer, a detection inside an EU incident; incident data only reaches back to 2024).
+- **Every cell is scored on every day.** Candidate cells are all 0.1 degree cells with a detection before the train
+  end. Training keeps every positive, 10% of the negatives in cells with a fire in the last 90 days and 2% of the
+  rest, each weighted by 1/keep, so losses, thresholds and probabilities stand for all cell-days.
+- Features: fire history per cell (`bin_day`), neighbours, season, CORINE bare ground, daily NASA POWER weather on a
+  1 degree grid (every cell touching Europe, from 2012), and the weather of the next 3 days (`fc_*`: peak wind,
+  peak temperature anomaly, rain, dry air). The model is trained with the reanalysis of those days (what a perfect
+  forecast would say); in use, days beyond the reanalysis come from the `forecast` step (DWD ICON via Open-Meteo,
+  `weather_forecast`, daily). Past days are therefore scored with perfect weather forecasts, which flatters them.
+  The `context` step embeds `context-data/` into `soil_cells` and `soil_squares`. The `weather` step is slow on
+  first run and resumable (`FIRMS_WEATHER=0` or `PIPELINE_SKIP=weather,forecast` skips both).
+- Older history: `FIRMS_START=2012-01-01` fetches MODIS and VIIRS from 2012. Skip `ems,sentinel2` when you only
+  want the NASA data (`PIPELINE_SKIP=ems,sentinel2`).
+- The map colours each country from green to red by its risk: the expected number of fire cells in the next days
+  (sum of the cell probabilities), ranked against that country's own year (`country_risk`, `/api/risk?date=`).
+- API: `/api/model/{train,stop,resume/{id},runs,stream}`, `/api/forecast?date=`, `/api/risk?date=`, `/api/regions`,
+  `/api/soil/tiles/{z}/{x}/{y}.png?cls=`.

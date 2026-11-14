@@ -14,7 +14,7 @@ from typing import Callable
 
 import lightgbm as lgb
 import numpy as np
-from sklearn.metrics import average_precision_score, precision_recall_curve
+from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score
 
 from .. import db, settings
 from . import benchmark, features, regions
@@ -38,8 +38,8 @@ def calibrate(p: np.ndarray, neg_keep: float = NEG_KEEP) -> np.ndarray:
 
 
 def create_run(params: dict) -> int:
-    p = {**DEFAULTS, "horizon": settings.HORIZON, "train_end": settings.TRAIN_END, "neg_keep": NEG_KEEP, "label": settings.LABEL, "early_stopping": 40,
-         "features": features.FEATURES, "holdout_event": settings.HOLDOUT_EVENT, **params}
+    p = {**DEFAULTS, "horizon": settings.HORIZON, "train_end": settings.TRAIN_END, "neg_keep": 1.0, "label": settings.LABEL, "early_stopping": 40,
+         "keep_active": features.KEEP_ACTIVE, "keep_cold": features.KEEP_COLD, "features": features.FEATURES, "holdout_event": settings.HOLDOUT_EVENT, **params}
     with db.session() as con:
         cur = con.execute("INSERT INTO model_runs (status, params, started_at, rounds_total) VALUES ('running', ?, ?, ?)",
                           (json.dumps(p), now(), int(p["rounds"])))
@@ -106,13 +106,15 @@ def train(run_id: int, emit: Callable[[dict], None], stop: threading.Event, resu
                              holdout=(event["first"], event["last"]) if event else None)
         if data is None:
             raise RuntimeError("no common-fire data to train on; run the pipeline first")
-        Xt, yt, _ = features.training_rows(data, horizon, "train", p["neg_keep"])
-        Xv, yv, _ = features.training_rows(data, horizon, "val", p["neg_keep"])
+        if "keep_cold" not in p:
+            raise RuntimeError("this run used the older sampling of recently burned cells only; start a new run")
+        Xt, yt, wt, _ = features.training_rows(data, horizon, "train", p["keep_active"], p["keep_cold"])
+        Xv, yv, wv, _ = features.training_rows(data, horizon, "val", p["keep_active"], p["keep_cold"])
         Xt, Xv = features.select(Xt, p["features"]), features.select(Xv, p["features"])
         if len(yt) == 0 or yt.sum() == 0:
             raise RuntimeError("no training rows with positives")
-        dt_ = lgb.Dataset(Xt, yt, feature_name=p["features"], free_raw_data=False)
-        dv = lgb.Dataset(Xv, yv, reference=dt_)
+        dt_ = lgb.Dataset(Xt, yt, weight=wt, feature_name=p["features"], free_raw_data=False)
+        dv = lgb.Dataset(Xv, yv, weight=wv, reference=dt_)
         init, done = None, 0
         if resume:
             ck = latest_checkpoint(run_id)
@@ -158,7 +160,7 @@ def train(run_id: int, emit: Callable[[dict], None], stop: threading.Event, resu
         metrics = evaluate(booster, data, p, Xv, yv)
         if event:   # replay the held-out event with this very model
             try:
-                metrics["benchmark"] = benchmark.replay(data, booster, metrics["threshold"], horizon, event, p["features"])
+                metrics["benchmark"] = benchmark.replay(data, booster, metrics["threshold"], horizon, event, p["features"], 1.0, p["keep_cold"])
             except Exception:  # noqa: BLE001 - a failed replay must not lose the trained model
                 log.exception("event replay failed")
         try:   # country level risk for the forecast map
@@ -180,29 +182,31 @@ def train(run_id: int, emit: Callable[[dict], None], stop: threading.Event, resu
 def evaluate(booster, data, p: dict, Xv=None, yv=None) -> dict:
     """Score the days after train_end at the alert threshold that maximises F1 on the validation days.
 
-    The threshold is picked on the validation days with every negative kept (training drops 90% of them), so it
-    reflects how rare real fires are. Xv and yv are unused; kept so callers need not change."""
+    Every metric is weighted by the sampling weights, so it stands for all cell-days of Europe, not just the sampled
+    ones. Xv and yv are unused; kept so callers need not change."""
     names = p.get("features")
-    Xf, yf, _ = features.training_rows(data, p["horizon"], "val", 1.0)
+    ka, kc = p.get("keep_active", 1.0), p.get("keep_cold", 1.0)
+    Xf, yf, wf, _ = features.training_rows(data, p["horizon"], "val", ka, kc)
     pv = calibrate(booster.predict(features.select(Xf, names)), p["neg_keep"])
-    thr = best_threshold(pv, yf)
+    thr = best_threshold(pv, yf, wf)
     out = {"threshold": float(thr), "horizon": p["horizon"], "label": p.get("label"), "train_end": p["train_end"]}
-    Xs, ys, _ = features.training_rows(data, p["horizon"], "test")
-    Xs = features.select(Xs, names)
+    Xs, ys, ws, _ = features.training_rows(data, p["horizon"], "test", ka, kc)
     out["test_rows"] = int(len(ys))
     if len(ys) and ys.sum() > 0:
-        ps = calibrate(booster.predict(Xs), p["neg_keep"])
+        ps = calibrate(booster.predict(features.select(Xs, names)), p["neg_keep"])
         pred = ps >= thr
-        tp = float((pred & (ys == 1)).sum())
-        out.update(pr_auc=float(average_precision_score(ys, ps)), base_rate=float(ys.mean()),
-                   precision=float(tp / max(pred.sum(), 1)), recall=float(tp / ys.sum()), test_positives=int(ys.sum()))
+        tp = float(ws[pred & (ys == 1)].sum())
+        out.update(pr_auc=float(average_precision_score(ys, ps, sample_weight=ws)),
+                   base_rate=float((ys * ws).sum() / ws.sum()),
+                   precision=float(tp / max(ws[pred].sum(), 1e-9)), recall=float(tp / (ys * ws).sum()),
+                   roc_auc=float(roc_auc_score(ys, ps, sample_weight=ws)), test_positives=int(ys.sum()))
     return out
 
 
-def best_threshold(p, y, base=None) -> float:
-    """Probability threshold with the best F1 over every cut of the scores."""
+def best_threshold(p, y, w=None) -> float:
+    """Probability threshold with the best F1 over every cut of the scores (weighted)."""
     if not len(y) or y.sum() == 0:
         return 0.5
-    prec, rec, thr = precision_recall_curve(y, p)
+    prec, rec, thr = precision_recall_curve(y, p, sample_weight=w)
     f = 2 * prec[:-1] * rec[:-1] / np.maximum(prec[:-1] + rec[:-1], 1e-12)
     return float(thr[int(np.argmax(f))])

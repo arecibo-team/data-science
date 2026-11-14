@@ -48,8 +48,9 @@ WEATHER = os.environ.get("FIRMS_WEATHER", "1") != "0"
 HORIZON = int(os.environ.get("FIRMS_HORIZON", "3"))
 TRAIN_END = os.environ.get("FIRMS_TRAIN_END", "2025-12-31")
 CHECKPOINT_EVERY = int(os.environ.get("FIRMS_CHECKPOINT_EVERY", "25"))
-# Label of the model: "confirmed" = the UI's COMMON layer (detections inside an EU incident), "both" = seen by MODIS and VIIRS.
-LABEL = os.environ.get("FIRMS_LABEL", "confirmed")
+# Label of the model: "both" = a fire seen by MODIS and VIIRS (consistent for every year since 2012, the default),
+# "confirmed" = the UI's COMMON layer (a detection inside an EU incident; incident data only reaches back to 2024).
+LABEL = os.environ.get("FIRMS_LABEL", "both")
 # Parallel NASA POWER requests of the weather step. Lower it if the service answers 429.
 WEATHER_WORKERS = int(os.environ.get("FIRMS_WEATHER_WORKERS", "4"))
 
