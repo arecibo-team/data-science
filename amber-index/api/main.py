@@ -14,7 +14,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from datetime import date as Date, timedelta
+
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Literal
 
@@ -24,7 +27,8 @@ from amber import ARTIFACTS_DIR, NAMES, RAW_DIR, live
 from amber.features import FEATURES, PILLARS, compute_rates
 from amber.model import load_artifacts
 from amber.power import power_index
-from amber.optimize import AssistanceParams, donor_table, optimize_assistance
+from amber.optimize import AssistanceParams, donor_table, haversine_km, optimize_assistance, plan_assistance
+from amber.replay import FireData, eta_hours, resources
 from amber.simulate import PRESETS, run_scenario
 from amber.scoring import amber_score, band, contributions, gap, pillar_scores, reason_text
 
@@ -48,7 +52,8 @@ def _load(path: Path) -> None:
            "final_weights": {"within": {f: w[f]["w_final"] for f in feats}, "pillar": {p: w["_pillars"][p]["w_final"] for p in PILLARS}},
            "scale": art["metadata"]["scale"], "reference": pd.Series(art["metadata"]["reference"])[feats],
            "df": pd.DataFrame(art["scores"]), "explainer": shap.TreeExplainer(art["model"]),
-           "artifacts_mtime": (path / "metadata.json").stat().st_mtime, "loaded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+           "artifacts_mtime": (path / "metadata.json").stat().st_mtime, "loaded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+           "fires": FireData(path / "fires") if (path / "fires" / "events.json").exists() else None}
     with LOCK:
         STATE.update(new)
 
@@ -622,3 +627,295 @@ def live_assistance(recipient: str, need: float | None = Query(None, gt=0), weig
 def admin_reload() -> dict:
     _load(_artifacts_path())
     return {"loaded_at": STATE["loaded_at"], "latest_year": int(STATE["df"]["year"].max())}
+
+
+def _fires() -> FireData:
+    fd = STATE.get("fires")
+    if fd is None:
+        raise HTTPException(503, "Fire history is not built. Run: python -c 'from amber.fires import build; build()'")
+    return fd
+
+
+def _replay_date(value: str | None) -> Date:
+    fd = _fires()
+    d = Date.fromisoformat(value) if value else Date(2021, 8, 4)
+    last_year = int(STATE["df"]["year"].max())
+    if not (Date(2012, 1, 20) <= d <= min(fd.end, Date(last_year, 12, 31))):
+        raise HTTPException(404, f"Replay dates run from 2012-01-20 to {min(fd.end, Date(last_year, 12, 31))}")
+    return d
+
+
+def _scenario_on(d: Date, extra: dict | None = None) -> tuple[pd.DataFrame, list[dict]]:
+    fd = _fires()
+    fires = fd.active_fires(d)
+    shocks = fd.fire_shocks(fires)
+    for iso2, ev in (extra or {}).items():
+        shocks[iso2] = shocks.get(iso2, []) + ev
+    res = run_scenario(_raw_table(d.year), shocks, STATE["preprocessor"], STATE["features"], STATE["final_weights"],
+                       STATE["scale"], STATE["metadata"].get("alpha", 0.5), d.year)
+    return res, fires
+
+
+class ActiveFire(BaseModel):
+    id: str
+    iso2: str
+    country: str
+    name: str
+    lat: float
+    lon: float
+    start: str
+    day: int
+    detections: int
+    hotspots_24h: int
+    last_sensor: str
+    last_time: str
+    last_date: str
+    ratio: float
+    status: str
+
+
+class Normal(BaseModel):
+    year: int
+    month: int
+    value: int
+    median: int
+    ratio: float
+    rank: int
+    years: int
+    since: int
+    usual_low: int
+    usual_high: int
+
+
+class ReplayCountry(BaseModel):
+    iso2: str
+    name: str
+    power: float
+    power_ref: float
+    power_rank: int
+    power_rank_ref: int
+    amber: float
+    band: str
+    danger: float
+    hazards: float
+    workforce: float
+    capability: float
+    active_fires: int
+    normal: Normal
+
+
+class DayValue(BaseModel):
+    date: str
+    value: float | None
+
+
+class ReplayResponse(BaseModel):
+    date: str
+    reference_date: str
+    counts: dict[str, int]
+    fires: list[ActiveFire]
+    countries: list[ReplayCountry]
+    eu_daily: list[DayValue]
+
+
+@app.get("/replay", response_model=ReplayResponse)
+def replay(date: str | None = Query(None, description="YYYY-MM-DD, default 2021-08-04")):
+    fd = _fires()
+    d = _replay_date(date)
+    ref = d.replace(day=1)
+    now, fires = _scenario_on(d)
+    before, _ = _scenario_on(ref)
+    counts = {"all": len(fires), "above": sum(f["status"] == "above" for f in fires), "watch": sum(f["status"] == "watch" for f in fires)}
+    per = pd.Series([f["iso2"] for f in fires]).value_counts() if fires else pd.Series(dtype=int)
+    countries = [ReplayCountry(iso2=i, name=NAMES[i], power=round(r.power_after, 1), power_ref=round(before.loc[i, "power_after"], 1),
+                               power_rank=int(r.power_rank_after), power_rank_ref=int(before.loc[i, "power_rank_after"]),
+                               amber=round(r.amber_after, 1), band=r.band_after, danger=round(r.danger_after, 2),
+                               hazards=round(r.hazards_after, 2), workforce=round(r.workforce_after, 2),
+                               capability=round(r.capability_after, 2), active_fires=int(per.get(i, 0)),
+                               normal=Normal(**fd.normal(i, d))) for i, r in now.iterrows()]
+    a = (ref - timedelta(days=1)).replace(day=1)
+    b = (Date(d.year + (d.month == 12), d.month % 12 + 1, 1) - timedelta(days=1))
+    return ReplayResponse(date=d.isoformat(), reference_date=ref.isoformat(), counts=counts,
+                          fires=[ActiveFire(**{k: f[k] for k in ActiveFire.model_fields}) for f in fires],
+                          countries=sorted(countries, key=lambda c: c.power_rank), eu_daily=fd.eu_daily(a, b))
+
+
+class MonthCell(BaseModel):
+    year: int
+    month: int
+    harmonized: float | None
+    raw: float | None
+    modelled: bool
+    partial: bool
+
+
+class LargeFire(BaseModel):
+    name: str
+    start: str
+    area_ha: int
+    detections: int
+
+
+class Outlook(BaseModel):
+    weeks: int
+    until: str
+    share: float
+    typical_week: int
+    bad_week: int
+
+
+class Analog(BaseModel):
+    year: int
+    largest_fire: str | None
+
+
+class HistoryResponse(BaseModel):
+    iso2: str
+    name: str
+    date: str
+    first_year: int
+    months: list[MonthCell]
+    normal: Normal
+    outlook: Outlook
+    largest_fires: list[LargeFire]
+    analog: Analog | None
+    validation_error_pct: float | None
+
+
+def _history(iso2: str, date: str | None) -> tuple[str, Date, FireData]:
+    iso2 = iso2.upper().replace("EL", "GR")
+    if iso2 not in NAMES:
+        raise HTTPException(404, f"Unknown country '{iso2}'")
+    return iso2, _replay_date(date), _fires()
+
+
+@app.get("/history/{iso2}.csv", response_class=PlainTextResponse)
+def history_csv(iso2: str, date: str | None = None):
+    iso2, d, fd = _history(iso2, date)
+    lines = ["country,year,month,harmonized_cell_days,raw_cell_days,raw_sensor,modelled_from_modis,partial_month"]
+    for c in fd.calendar(iso2, d):
+        if c["harmonized"] is None:
+            continue
+        lines.append(f"{iso2},{c['year']},{c['month']},{c['harmonized']},{c['raw']},{'MODIS' if c['year'] < 2012 else 'VIIRS'},"
+                     f"{int(c['modelled'])},{int(c['partial'])}")
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/csv",
+                             headers={"Content-Disposition": f'attachment; filename="arecibo-{iso2}-{d.isoformat()}.csv"'})
+
+
+@app.get("/history/{iso2}", response_model=HistoryResponse)
+def history(iso2: str, date: str | None = None):
+    iso2, d, fd = _history(iso2, date)
+    an = fd.analog(iso2, d)
+    return HistoryResponse(iso2=iso2, name=NAMES[iso2], date=d.isoformat(), first_year=2001, months=fd.calendar(iso2, d),
+                           normal=Normal(**fd.normal(iso2, d)), outlook=Outlook(**fd.outlook(iso2, d)),
+                           largest_fires=fd.largest(iso2, d), analog=Analog(**an) if an else None,
+                           validation_error_pct=fd.meta["validation"].get(iso2, {}).get("mean_abs_error_pct"))
+
+
+SCENARIOS = {"wildfire_season": [("WF", "Orange", 3)], "several_hazards": PRESETS["multi_hazard"],
+             "major_flood": PRESETS["major_flood"], "earthquake": PRESETS["earthquake"], "drought": PRESETS["drought"]}
+
+
+class PlanRequest(BaseModel):
+    recipient: str
+    date: str | None = None
+    scenario: Literal["wildfire_season", "several_hazards", "major_flood", "earthquake", "drought"] = "wildfire_season"
+    min_power_after: float | None = Field(50.0, ge=0, le=100)
+    skip_active_fires: bool = True
+    fastest_first: bool = True
+
+
+class PlanDonor(BaseModel):
+    iso2: str
+    name: str
+    sent: int
+    water_bombers: int
+    ground_teams: int
+    resources: str
+    eta_h: float
+    mode: str
+    distance_km: float
+    power_before: float
+    power_after: float
+
+
+class LeftOut(BaseModel):
+    iso2: str
+    name: str
+    reason: str
+    power: float
+    power_if_sent: float | None
+
+
+class PlanRecipient(BaseModel):
+    iso2: str
+    name: str
+    power_before: float
+    power_after: float
+    power_with_help: float
+    crew_demand: float
+    firefighters: float
+
+
+class PlanResponse(BaseModel):
+    date: str
+    reference_date: str
+    scenario: str
+    recipient: PlanRecipient
+    need: float
+    covered: int
+    shortfall: float
+    hours: float | None
+    donors: list[PlanDonor]
+    left_out: list[LeftOut]
+    incident: list[float]
+
+
+@app.post("/plan", response_model=PlanResponse)
+def plan(body: PlanRequest):
+    recipient = body.recipient.upper().replace("EL", "GR")
+    if recipient not in NAMES:
+        raise HTTPException(404, f"Unknown country '{recipient}'")
+    d = _replay_date(body.date)
+    ref = d.replace(day=1)
+    before, _ = _scenario_on(ref)
+    now, fires = _scenario_on(d, {recipient: list(SCENARIOS[body.scenario])})
+    cent = pd.DataFrame(STATE["metadata"]["centroids"], index=["lat", "lon"]).T
+    own = [f for f in fires if f["iso2"] == recipient]
+    incident = (max(own, key=lambda f: f["detections"])["lat"], max(own, key=lambda f: f["detections"])["lon"]) if own \
+        else (float(cent.loc[recipient, "lat"]), float(cent.loc[recipient, "lon"]))
+    table = donor_table(now, cent)
+    dist = pd.Series(haversine_km(table["lat"], table["lon"], incident[0], incident[1]), index=table.index)
+    eta = pd.Series({i: eta_hours(i, dist[i])[0] for i in table.index})
+    with_fires = {f["iso2"] for f in fires} - {recipient}
+    rec = now.loc[recipient]
+    need = float(rec.crew_demand)
+    params = AssistanceParams(weight_location=0.8 if body.fastest_first else 0.5)
+    donors, info = plan_assistance(table, recipient, need, eta, params, body.min_power_after,
+                                   with_fires if body.skip_active_fires else None)
+    sent = donors[donors["sent"] > 0].copy()
+    sent["eta"] = [eta_hours(i, dist[i]) for i in sent.index]
+    sent = sent.assign(eta_h=[e[0] for e in sent["eta"]], mode=[e[1] for e in sent["eta"]]).sort_values("eta_h")
+    out_donors = []
+    for i, r in sent.iterrows():
+        res = resources(i, int(r.sent), r["mode"])
+        out_donors.append(PlanDonor(iso2=i, name=NAMES[i], sent=int(r.sent), water_bombers=res["water_bombers"],
+                                    ground_teams=res["ground_teams"], resources=res["text"], eta_h=round(float(r.eta_h), 1),
+                                    mode=r["mode"], distance_km=round(float(dist[i]), 0), power_before=round(float(r.power), 1),
+                                    power_after=round(float(r.power_after), 1)))
+    left = donors[(donors["sent"] == 0) & (donors["reason"] != "")].copy()
+    left = left.assign(eta_h=eta.reindex(left.index)).sort_values("eta_h").head(4)
+    left_out = [LeftOut(iso2=i, name=NAMES[i], reason=r.reason, power=round(float(r.power), 1),
+                        power_if_sent=round(float(r.drop_one_team), 1) if r.reason == "would drop below" else None)
+                for i, r in left.iterrows()]
+    committed = float(rec.committed_share)
+    base = float(rec.power_after) / (1 - committed) if committed < 1 else float(rec.power_after)
+    remaining = max(0.0, need - info["covered"]) / max(float(rec.firefighters), 1.0)
+    with_help = base * (1 - min(remaining, 0.95))
+    recipient_out = PlanRecipient(iso2=recipient, name=NAMES[recipient], power_before=round(float(before.loc[recipient, "power_after"]), 1),
+                                  power_after=round(float(rec.power_after), 1), power_with_help=round(with_help, 1),
+                                  crew_demand=need, firefighters=round(float(rec.firefighters)))
+    return PlanResponse(date=d.isoformat(), reference_date=ref.isoformat(), scenario=body.scenario, recipient=recipient_out,
+                        need=info["need"], covered=info["covered"], shortfall=info["shortfall"],
+                        hours=max((x.eta_h for x in out_donors), default=None), donors=out_donors, left_out=left_out,
+                        incident=[round(incident[0], 4), round(incident[1], 4)])

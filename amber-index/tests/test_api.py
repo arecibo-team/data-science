@@ -245,8 +245,52 @@ def test_rescore_reproduces_scores(tmp_path):
     from amber import ARTIFACTS_DIR
     from amber.pipeline import rescore
     for f in ARTIFACTS_DIR.iterdir():
-        shutil.copy(f, tmp_path / f.name)
+        if f.is_file():
+            shutil.copy(f, tmp_path / f.name)
     rescore(refresh=False, out=tmp_path, verbose=False)
     old = {(r["iso2"], r["year"]): r["amber"] for r in json.loads((ARTIFACTS_DIR / "scores.json").read_text())}
     new = {(r["iso2"], r["year"]): r["amber"] for r in json.loads((tmp_path / "scores.json").read_text())}
     assert old == new
+
+
+def test_replay_day(client):
+    r = client.get("/replay", params={"date": "2021-08-08"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["reference_date"] == "2021-08-01" and body["counts"]["all"] == len(body["fires"]) > 0
+    assert len(body["countries"]) == 27 and len(body["eu_daily"]) == 62
+    gr = next(c for c in body["countries"] if c["iso2"] == "GR")
+    assert gr["power"] <= gr["power_ref"] and gr["normal"]["rank"] <= 3
+    assert all(f["status"] in {"above", "watch", "normal"} for f in body["fires"])
+
+
+def test_replay_out_of_range(client):
+    assert client.get("/replay", params={"date": "2005-08-01"}).status_code == 404
+
+
+def test_history(client):
+    r = client.get("/history/GR", params={"date": "2021-08-08"})
+    assert r.status_code == 200
+    body = r.json()
+    months = body["months"]
+    assert months[0]["year"] == 2001 and months[-1]["year"] == 2021
+    assert all(m["modelled"] == (m["year"] < 2012) for m in months)
+    assert next(m for m in months if m["year"] == 2021 and m["month"] == 9)["harmonized"] is None
+    assert body["largest_fires"] and body["outlook"]["bad_week"] >= body["outlook"]["typical_week"]
+
+
+def test_history_csv(client):
+    r = client.get("/history/GR.csv", params={"date": "2021-08-08"})
+    assert r.status_code == 200 and r.text.startswith("country,year,month,harmonized_cell_days")
+
+
+def test_plan(client):
+    r = client.post("/plan", json={"recipient": "GR", "date": "2021-08-08", "scenario": "wildfire_season"})
+    assert r.status_code == 200
+    body = r.json()
+    rec = body["recipient"]
+    assert rec["power_after"] <= rec["power_before"] and rec["power_with_help"] >= rec["power_after"]
+    assert all(d["power_after"] >= 50 - 0.5 for d in body["donors"])
+    etas = [d["eta_h"] for d in body["donors"]]
+    assert etas == sorted(etas)
+    assert all(lo["iso2"] not in {d["iso2"] for d in body["donors"]} for lo in body["left_out"])

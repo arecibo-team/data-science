@@ -85,3 +85,31 @@ def optimize_assistance(table: pd.DataFrame, recipient: str, need: float, incide
     }
     cols = ["sent", "share_of_need", "share_of_own_crews", "distance_km", "power", "power_after", "capacity", "cost"]
     return sent[cols], summary
+
+
+def plan_assistance(table: pd.DataFrame, recipient: str, need: float, eta: pd.Series, params: AssistanceParams,
+                    min_power_after: float | None = None, exclude: set[str] | None = None) -> tuple[pd.DataFrame, dict]:
+    donors = table.drop(index=recipient).copy()
+    donors["eta_h"] = eta.reindex(donors.index)
+    donors["capacity"] = donor_capacity(donors, params)
+    donors["reason"] = ""
+    if exclude:
+        hit = donors.index.isin(list(exclude))
+        donors.loc[hit, ["capacity", "reason"]] = [0.0, "active fires"]
+    donors.loc[(donors["capacity"] <= 0) & (donors["reason"] == "") & (donors["power"] < params.min_power), "reason"] = "low power"
+    if min_power_after is not None:
+        keep = (donors["firefighters"] * (1 - min_power_after / donors["power"].clip(lower=1e-6))).clip(lower=0)
+        limited = (donors["capacity"] > keep + 1e-9) & (donors["reason"] == "")
+        donors.loc[(donors["reason"] == "") & (donors["power"] < min_power_after), "reason"] = "already below"
+        donors.loc[limited & (keep < params.min_team) & (donors["reason"] == ""), "reason"] = "would drop below"
+        donors["capacity"] = np.minimum(donors["capacity"], keep)
+    donors["upper"] = np.minimum(donors["capacity"], params.max_share_per_donor * need)
+    w = params.weight_location
+    donors["cost"] = w * donors["eta_h"] / (donors["eta_h"].max() or 1.0) + (1 - w) * (1 - donors["power"] / 100)
+    x, status = _solve(donors["cost"].to_numpy(), donors["upper"].to_numpy(), int(np.ceil(need)), params.min_team)
+    donors["sent"] = x
+    donors["power_after"] = donors["power"] * (1 - donors["sent"] / donors["firefighters"])
+    donors["drop_one_team"] = donors["power"] * (1 - params.min_team / donors["firefighters"])
+    covered = int(donors["sent"].sum())
+    return donors, {"need": float(np.ceil(need)), "covered": covered, "shortfall": float(max(0.0, np.ceil(need) - covered)),
+                    "status": str(status)}
