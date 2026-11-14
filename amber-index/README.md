@@ -12,7 +12,7 @@ weight-slider endpoint are served by a FastAPI service for a front-end.
 | Pillar | Direction | Indicators (all scaled 0–1) |
 |---|---|---|
 | Danger | raises | burned area as % of land |
-| Hazards | raises | GDACS alerts in the country (floods, earthquakes, droughts, storms, volcanoes, wildfires): all alerts per 100,000 km² weighted Green 0.5, Orange 3, Red 9, plus major (Orange/Red) alerts |
+| Hazards | raises | GDACS alerts in the country (floods, earthquakes, droughts, storms, volcanoes, wildfires): all alerts weighted Green 0.5, Orange 3, Red 9, plus major (Orange/Red) alerts, each as a percentile among EU countries that year |
 | Workforce | lowers | professional firefighters per 100k inhabitants (+ volunteers per 100k if `data/manual/volunteers.csv` is filled) |
 | Capability | lowers | fire-protection spending per inhabitant; fire stations per 1,000 km² and per 100k inhabitants |
 
@@ -94,7 +94,8 @@ curl -X POST localhost:8000/optimize/assistance -H 'Content-Type: application/js
 | `POST /simulate` | force hazards on countries → power, ranks, crew demand and unmet demand before and after |
 | `POST /optimize/assistance` | recipient + need (or shocks that create one) → which countries send how many firefighters |
 
-Tests: `.venv/bin/python -m pytest`.
+Tests: `.venv/bin/python -m pytest`. A guided tour of every use case, against a running API: `./api/examples.sh`
+(set `BASE=` to point it at another host; needs `jq`).
 
 ## Validation
 
@@ -112,11 +113,18 @@ forecast (next year = this year) as a reference. Rows are never shuffled.
 - **OpenStreetMap station counts vary in completeness** between countries and are a single current snapshot applied to
   every year. Countries whose Overpass query failed are imputed.
 - **GDACS coverage is uneven.** It logs every M4.5+ earthquake (so seismic countries like Greece collect many Green
-  alerts) and its flood and wildfire alerting expanded over the years. Green alerts are down-weighted for that reason.
+  alerts), and it issues far more Orange/Red alerts in recent years (1 for these countries in 2016, 29 in 2025). Green
+  alerts are down-weighted, and hazards are measured as a percentile among EU countries in the same year, so the growing
+  coverage does not show up as a trend; the hazards pillar says how hit a country was compared with its peers.
+- **Spending for the latest year** is not yet published by Eurostat; the nearest published year is carried forward
+  (flagged imputed), as for firefighters.
 - **Burned area covers wildfires, not building fires**, and only fires large enough for satellites (GWIS).
 - Fire-protection spending (COFOG GF0302) covers all fire services, not only wildfire.
 - Crew demand per event (Green 50, Orange 500, Red 2,000), the 5% deployable share and the 40% cap are planning
   assumptions, not measured values; the API lets you change all of them except the demand table.
+- The next-year burned-area prediction is a correlation learned across countries, not a policy effect: changing one
+  indicator in `/predict` moves the Amber score and power as designed, but the predicted burned area should not be read
+  as "what would happen if". Simple persistence (next year = this year) ranks countries better than the model.
 - Distances are straight lines between country centroids (or to a given incident point), not travel times.
 - With 27 countries and about ten years, the model has a few hundred rows; its weights are a guide, which is why the
   final weights blend 50% model and 50% equal.

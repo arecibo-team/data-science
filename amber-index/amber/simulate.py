@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .data import ALERT_WEIGHT
+from .data import ALERT_WEIGHT, peer_percentiles
 from .power import ALPHA, add_power
 from .scoring import amber_score, band, gap, pillar_scores
 
@@ -34,9 +34,9 @@ def apply_shocks(raw: pd.DataFrame, shocks: dict[str, list[tuple[str, str, int]]
         if iso2 not in out.index:
             raise KeyError(iso2)
         out.loc[iso2, "hazard_load"] = np.nan_to_num(out.loc[iso2, "hazard_load"]) + shock_load(events)
-        out.loc[iso2, "hazard_density"] = out.loc[iso2, "hazard_load"] / out.loc[iso2, "area_km2"] * 1e5
         out.loc[iso2, "major_load"] = np.nan_to_num(out.loc[iso2, "major_load"]) + shock_load(events, major_only=True)
-        out.loc[iso2, "major_hazards"] = out.loc[iso2, "major_load"]
+    pct = peer_percentiles(out.assign(iso2=out.index, year=0))
+    out["hazard_alerts"], out["major_hazards"] = pct["hazard_pct"].to_numpy(), pct["major_pct"].to_numpy()
     return out
 
 

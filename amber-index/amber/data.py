@@ -279,8 +279,14 @@ def hazard_load(events: pd.DataFrame, years: list[int]) -> pd.DataFrame:
                                             major_load=("major_weight", "sum"), major_events=("major", "sum")).reset_index()
     by_type = df.pivot_table(index=["iso2", "year"], columns="eventtype", values="weight", aggfunc="size", fill_value=0)
     by_type.columns = [f"events_{HAZARD_TYPES.get(c, c).replace(' ', '_')}" for c in by_type.columns]
-    out = grid.merge(load, on=["iso2", "year"], how="left").merge(by_type.reset_index(), on=["iso2", "year"], how="left")
-    return out.fillna(0)
+    out = grid.merge(load, on=["iso2", "year"], how="left").merge(by_type.reset_index(), on=["iso2", "year"], how="left").fillna(0)
+    return out.assign(**peer_percentiles(out))
+
+
+def peer_percentiles(df: pd.DataFrame) -> dict:
+    n = df.groupby("year")["iso2"].transform("size").clip(lower=2)
+    pct = lambda c: (df.groupby("year")[c].rank(method="min") - 1) / (n - 1)
+    return {"hazard_pct": pct("hazard_load"), "major_pct": pct("major_load")}
 
 
 # ---------------------------------------------------------------- manual + boundaries

@@ -113,7 +113,7 @@ def gap_of_row(x: pd.Series, weights: dict) -> float:
 
 REASON_PHRASES = {  # feature -> (phrase when the scaled value is high, phrase when low)
     "burned_share_pct": ("High burned area", "Low burned area"),
-    "hazard_density": ("Many concurrent hazards", "Few concurrent hazards"),
+    "hazard_alerts": ("Many concurrent hazards", "Few concurrent hazards"),
     "major_hazards": ("Major disasters under way", "No major disasters"),
     "ff_per_100k": ("Many firefighters per inhabitant", "Few firefighters per inhabitant"),
     "volunteers_per_100k": ("Many volunteer firefighters", "Few volunteer firefighters"),
@@ -130,17 +130,13 @@ def reason_text(feature: str, points: float, value_scaled: float, reference: flo
 
 
 def label_archetypes(centers: pd.DataFrame) -> list[str]:
-    """Name KMeans(4) clusters from their pillar centres:
-    highest danger -> Wildfire frontline; of the rest, highest readiness -> Well-resourced,
-    lowest readiness -> Thin coverage, remaining -> Low exposure."""
     c = centers.assign(readiness=(centers["workforce"] + centers["capability"]) / 2,
-                       exposure=centers["danger"] + centers.get("hazards", 0))
+                       hazards=centers["hazards"] if "hazards" in centers else 0.0)
     labels = {}
-    front = c["exposure"].idxmax(); labels[front] = "Wildfire frontline"
-    rest = c.drop(index=front)
-    well = rest["readiness"].idxmax(); labels[well] = "Well-resourced"
-    rest = rest.drop(index=well)
-    thin = rest["readiness"].idxmin(); labels[thin] = "Thin coverage"
-    for i in rest.index.drop(thin):
-        labels[i] = "Low exposure"
+    rest = c
+    front = rest["danger"].idxmax(); labels[front] = "Wildfire frontline"; rest = rest.drop(index=front)
+    multi = rest["hazards"].idxmax(); labels[multi] = "Multi-hazard exposure"; rest = rest.drop(index=multi)
+    well = rest["readiness"].idxmax(); labels[well] = "Well-resourced"; rest = rest.drop(index=well)
+    for i in rest.index:
+        labels[i] = "Thin coverage" if rest.loc[i, "readiness"] < c["readiness"].mean() else "Low exposure"
     return [labels[i] for i in centers.index]

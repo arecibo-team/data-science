@@ -113,6 +113,7 @@ class ScoreDetail(Score):
 class PredictRequest(BaseModel):
     """Raw indicators for one country-year. Any value may be null; nulls are imputed."""
     iso2: str | None = None
+    year: int | None = Field(None, description="Year whose EU countries the hazard loads are ranked against; defaults to the latest")
     burned_ha: float | None = Field(None, ge=0)
     area_km2: float | None = Field(None, gt=0)
     population: float | None = Field(None, gt=0)
@@ -260,7 +261,11 @@ def score_one(iso2: str, year: int | None = None):
 @app.post("/predict", response_model=PredictResponse)
 def predict(body: PredictRequest):
     feats = STATE["features"]
-    raw = pd.DataFrame([{k: (np.nan if v is None else v) for k, v in body.model_dump(exclude={"iso2"}).items()}])
+    y = _year(body.year)
+    peers = STATE["df"][(STATE["df"].year == y) & (STATE["df"].iso2 != (body.iso2 or "").upper())]
+    pct = lambda v, col: np.nan if v is None else float((peers[col] < v).sum() / max(1, len(peers)))
+    raw = pd.DataFrame([{**{k: (np.nan if v is None else v) for k, v in body.model_dump(exclude={"iso2", "year"}).items()},
+                         "hazard_pct": pct(body.hazard_load, "hazard_load"), "major_pct": pct(body.major_load, "major_load")}])
     rates = compute_rates(raw)[feats]
     X = STATE["preprocessor"].transform(rates)
     pred_log = float(STATE["model"].predict(X)[0])
@@ -348,6 +353,7 @@ def _raw_table(year: int) -> pd.DataFrame:
     df = STATE["df"][STATE["df"].year == year]
     raw = pd.DataFrame([{**{f: (np.nan if r["raw"].get(f) is None else r["raw"][f]) for f in STATE["features"]},
                          "area_km2": r["area_km2"], "hazard_load": r["hazard_load"], "major_load": r["major_load"],
+
                          "firefighters_est": r["firefighters_est"]}
                         for r in df.to_dict("records")],
                        index=df["iso2"].to_list())

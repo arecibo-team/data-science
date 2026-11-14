@@ -1,7 +1,7 @@
 {
   "feature_order": [
     "burned_share_pct",
-    "hazard_density",
+    "hazard_alerts",
     "major_hazards",
     "ff_per_100k",
     "spend_per_capita",
@@ -132,26 +132,26 @@
     {
       "model": "ElasticNet",
       "validation": "Leave one country out",
-      "MAE": 0.1304,
-      "Spearman": 0.5718
+      "MAE": 0.127,
+      "Spearman": 0.6479
     },
     {
       "model": "ElasticNet",
       "validation": "Time split (train t<=2020, test t>=2021)",
-      "MAE": 0.1402,
-      "Spearman": 0.5694
+      "MAE": 0.1347,
+      "Spearman": 0.6781
     },
     {
       "model": "LightGBM",
       "validation": "Leave one country out",
-      "MAE": 0.1397,
-      "Spearman": 0.4865
+      "MAE": 0.1326,
+      "Spearman": 0.5666
     },
     {
       "model": "LightGBM",
       "validation": "Time split (train t<=2020, test t>=2021)",
-      "MAE": 0.1396,
-      "Spearman": 0.4975
+      "MAE": 0.1189,
+      "Spearman": 0.5163
     },
     {
       "model": "Persistence",
@@ -167,17 +167,17 @@
     }
   ],
   "scale": {
-    "k": 7.640527771924125,
-    "c": -0.14286535079726417
+    "k": 6.564583000825035,
+    "c": -0.1046242784069498
   },
   "reference": {
     "burned_share_pct": 0.1654726189355819,
-    "hazard_density": 0.302309763373868,
+    "hazard_alerts": 0.4203367003367003,
     "major_hazards": 0.0,
-    "ff_per_100k": 0.4886463744636571,
+    "ff_per_100k": 0.48722927418151835,
     "spend_per_capita": 0.5351970223108373,
-    "stations_per_1000km2": 0.4034827148326428,
-    "stations_per_100k": 0.39837701560001815
+    "stations_per_1000km2": 0.33048537332760647,
+    "stations_per_100k": 0.30551838246768037
   },
   "bands": {
     "green_below": 40,
@@ -203,7 +203,7 @@
     "boundaries": "https://gisco-services.ec.europa.eu/distribution/v2/countries/geojson/CNTR_RG_20M_2020_4326.geojson",
     "hazards": "https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH"
   },
-  "created": "2026-11-14T16:54:14+00:00",
+  "created": "2026-11-14T17:09:49+00:00",
   "versions": {
     "python": "3.12.16",
     "pandas": "3.1.1",
