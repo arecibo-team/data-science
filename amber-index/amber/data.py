@@ -120,7 +120,7 @@ def _parse_firefighter_xlsx(content: bytes, url: str) -> pd.DataFrame:
             if "Country" in cols and any("Number of firefighters" in c for c in cols):  # wide layout
                 df = sh.iloc[hdr + 1:].set_axis(cols, axis=1)
                 num = next(c for c in cols if "Number of firefighters" in c)
-                m = re.search(r"(20\d\d)", url.split("?")[0].rsplit("/", 2)[-2])
+                m = re.search(r"(20\d\d)\.xlsx", url.split("?")[0])
                 year = int(m.group(1)) if m else None
                 out = pd.DataFrame({"iso2": df["Country"].map(NAME_TO_ISO2), "year": year,
                                     "ths": pd.to_numeric(df[num], errors="coerce"), "flag": df.get("FLAG_RELIAB")})
@@ -135,6 +135,8 @@ def load_firefighters(refresh: bool = False) -> pd.DataFrame:
     for i, url in enumerate(firefighter_file_urls(refresh)):
         content = _cached_bytes(RAW_DIR / f"lfs_firefighters_{i}.xlsx", url, refresh)
         frames.append(_parse_firefighter_xlsx(content, url))
+    for path in sorted((MANUAL_DIR / "lfs").glob("*.xlsx")):
+        frames.append(_parse_firefighter_xlsx(path.read_bytes(), path.name))
     df = pd.concat(frames, ignore_index=True)
     df = df[df["iso2"].isin(EU27)].copy()
     df["flag"] = df["flag"].astype("string").str.strip().str.lower()

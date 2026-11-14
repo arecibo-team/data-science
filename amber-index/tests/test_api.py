@@ -193,3 +193,60 @@ def test_model_info(client):
     assert body["model"] == "LGBMRegressor"
     assert {f["pillar"] for f in body["features"]} >= {"danger", "hazards", "workforce", "capability"}
     assert abs(sum(p["w_final"] for p in body["pillars"].values()) - 1) < 1e-6
+
+
+def _fake_events():
+    import pandas as pd
+    now = pd.Timestamp.now(tz="UTC")
+    return pd.DataFrame([
+        {"iso2": "CY", "eventid": 1, "eventtype": "WF", "alertlevel": "Red", "name": "Forest fires in Cyprus", "start": now, "end": now, "url": None},
+        {"iso2": "CY", "eventid": 2, "eventtype": "FL", "alertlevel": "Red", "name": "Flood in Cyprus", "start": now, "end": now, "url": None},
+        {"iso2": "DE", "eventid": 3, "eventtype": "DR", "alertlevel": "Orange", "name": "Drought", "start": now, "end": now, "url": None},
+    ])
+
+
+def test_live_uses_current_events(client, monkeypatch):
+    import api.main as m
+    monkeypatch.setattr(m.live, "fetch_active_events", lambda days=14: _fake_events())
+    r = client.get("/live", params={"refresh": True})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["countries"]) == 27 and len(body["events"]) == 3
+    assert "CY" in body["stretched"]
+    de = next(c for c in body["countries"] if c["iso2"] == "DE")
+    assert de["crew_demand"] == 50 and de["unmet_demand"] == 0
+    assert client.get("/health").json()["live_events"] == 3
+
+
+def test_live_assistance(client, monkeypatch):
+    import api.main as m
+    monkeypatch.setattr(m.live, "fetch_active_events", lambda days=14: _fake_events())
+    client.get("/live", params={"refresh": True})
+    r = client.get("/live/assistance", params={"recipient": "CY"})
+    assert r.status_code == 200 and r.json()["covered"] > 0
+    assert all(d["iso2"] != "CY" for d in r.json()["donors"])
+    assert client.get("/live/assistance", params={"recipient": "FI"}).status_code == 422
+
+
+def test_hot_reload_when_artifacts_change(client):
+    import os, time
+    import api.main as m
+    before = client.get("/health").json()["loaded_at"]
+    meta = m._artifacts_path() / "metadata.json"
+    time.sleep(1.1)
+    os.utime(meta, None)
+    after = client.get("/health").json()["loaded_at"]
+    assert after != before
+    assert client.post("/admin/reload").status_code == 200
+
+
+def test_rescore_reproduces_scores(tmp_path):
+    import json, shutil
+    from amber import ARTIFACTS_DIR
+    from amber.pipeline import rescore
+    for f in ARTIFACTS_DIR.iterdir():
+        shutil.copy(f, tmp_path / f.name)
+    rescore(refresh=False, out=tmp_path, verbose=False)
+    old = {(r["iso2"], r["year"]): r["amber"] for r in json.loads((ARTIFACTS_DIR / "scores.json").read_text())}
+    new = {(r["iso2"], r["year"]): r["amber"] for r in json.loads((tmp_path / "scores.json").read_text())}
+    assert old == new

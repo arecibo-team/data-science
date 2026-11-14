@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 from datetime import datetime, timezone
 from pathlib import Path
@@ -97,16 +98,18 @@ FILES = ("model.joblib", "preprocessor.joblib", "weights.json", "scores.json", "
 
 def save_artifacts(model, preprocessor, weights_table: dict, scores: list[dict], metadata: dict,
                    out: Path = ARTIFACTS_DIR) -> list[Path]:
+    from .pipeline import write_json_atomic
     out.mkdir(parents=True, exist_ok=True)
-    joblib.dump(model, out / "model.joblib")
-    joblib.dump(preprocessor, out / "preprocessor.joblib")
-    (out / "weights.json").write_text(json.dumps(weights_table, indent=2))
-    (out / "scores.json").write_text(json.dumps(scores, indent=1))
+    for obj, name in ((model, "model.joblib"), (preprocessor, "preprocessor.joblib")):
+        joblib.dump(obj, out / (name + ".tmp"))
+        os.replace(out / (name + ".tmp"), out / name)
+    write_json_atomic(out / "weights.json", weights_table)
+    write_json_atomic(out / "scores.json", scores)
     import lightgbm, shap, sklearn  # versions for the record
     metadata = {**metadata, "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "versions": {"python": platform.python_version(), "pandas": pd.__version__, "numpy": np.__version__,
                              "scikit-learn": sklearn.__version__, "lightgbm": lightgbm.__version__, "shap": shap.__version__}}
-    (out / "metadata.json").write_text(json.dumps(metadata, indent=2))
+    write_json_atomic(out / "metadata.json", metadata)
     return [out / f for f in FILES]
 
 

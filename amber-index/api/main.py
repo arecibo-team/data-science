@@ -4,19 +4,23 @@ Run:  uvicorn api.main:app --reload
 """
 from __future__ import annotations
 
+import json
 import os
+import threading
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from amber import ARTIFACTS_DIR, NAMES
+from amber import ARTIFACTS_DIR, NAMES, RAW_DIR, live
 from amber.features import FEATURES, PILLARS, compute_rates
 from amber.model import load_artifacts
 from amber.power import power_index
@@ -25,33 +29,103 @@ from amber.simulate import PRESETS, run_scenario
 from amber.scoring import amber_score, band, contributions, gap, pillar_scores, reason_text
 
 STATE: dict = {}
+LOCK = threading.RLock()
+LIVE_TTL = int(os.environ.get("AMBER_LIVE_TTL", "3600"))
+LIVE_DAYS = int(os.environ.get("AMBER_LIVE_DAYS", "14"))
+LIVE_CACHE = Path(os.environ.get("AMBER_LIVE_CACHE", RAW_DIR / "live_events.json"))
+
+
+def _artifacts_path() -> Path:
+    return Path(os.environ.get("AMBER_ARTIFACTS", ARTIFACTS_DIR))
+
+
+def _load(path: Path) -> None:
+    import shap
+    art = load_artifacts(path)
+    w = art["weights"]
+    feats = art["metadata"]["feature_order"]
+    new = {**art, "features": feats,
+           "final_weights": {"within": {f: w[f]["w_final"] for f in feats}, "pillar": {p: w["_pillars"][p]["w_final"] for p in PILLARS}},
+           "scale": art["metadata"]["scale"], "reference": pd.Series(art["metadata"]["reference"])[feats],
+           "df": pd.DataFrame(art["scores"]), "explainer": shap.TreeExplainer(art["model"]),
+           "artifacts_mtime": (path / "metadata.json").stat().st_mtime, "loaded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    with LOCK:
+        STATE.update(new)
+
+
+def _maybe_reload() -> None:
+    path = _artifacts_path()
+    try:
+        mtime = (path / "metadata.json").stat().st_mtime
+    except FileNotFoundError:
+        return
+    if mtime != STATE.get("artifacts_mtime"):
+        _load(path)
+
+
+def _store_live(events: pd.DataFrame, fetched_at: str, persist: bool = True) -> None:
+    with LOCK:
+        STATE["live"] = {"events": events, "fetched_at": fetched_at, "days": LIVE_DAYS}
+    if persist:
+        LIVE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        LIVE_CACHE.write_text(json.dumps({"fetched_at": fetched_at, "days": LIVE_DAYS,
+                                          "events": json.loads(events.to_json(orient="records", date_format="iso"))}))
+
+
+def _refresh_live() -> None:
+    events = live.fetch_active_events(LIVE_DAYS)
+    _store_live(events, datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+
+def _restore_live() -> None:
+    if not LIVE_CACHE.exists():
+        return
+    c = json.loads(LIVE_CACHE.read_text())
+    ev = pd.DataFrame(c["events"], columns=["iso2", "eventid", "eventtype", "alertlevel", "name", "start", "end", "url"])
+    for col in ("start", "end"):
+        ev[col] = pd.to_datetime(ev[col], utc=True, errors="coerce")
+    _store_live(ev, c["fetched_at"], persist=False)
+
+
+def _live_age() -> float:
+    f = STATE.get("live", {}).get("fetched_at")
+    return float("inf") if not f else (datetime.now(timezone.utc) - datetime.fromisoformat(f)).total_seconds()
+
+
+def _background(stop: threading.Event) -> None:
+    while not stop.is_set():
+        if _live_age() >= LIVE_TTL:
+            try:
+                _refresh_live()
+            except Exception as e:
+                STATE["live_error"] = str(e)
+        stop.wait(60)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    path = Path(os.environ.get("AMBER_ARTIFACTS", ARTIFACTS_DIR))
     try:
-        art = load_artifacts(path)
+        _load(_artifacts_path())
     except FileNotFoundError as e:
         raise RuntimeError(f"{e} The API needs these files: run the notebook first.") from e
-    import shap
-    w = art["weights"]
-    feats = art["metadata"]["feature_order"]
-    STATE.update(art)
-    STATE["features"] = feats
-    STATE["final_weights"] = {"within": {f: w[f]["w_final"] for f in feats},
-                              "pillar": {p: w["_pillars"][p]["w_final"] for p in PILLARS}}
-    STATE["scale"] = art["metadata"]["scale"]
-    STATE["reference"] = pd.Series(art["metadata"]["reference"])[feats]
-    STATE["df"] = pd.DataFrame(art["scores"])
-    STATE["explainer"] = shap.TreeExplainer(art["model"])
+    _restore_live()
+    stop = threading.Event()
+    if os.environ.get("AMBER_LIVE", "1") != "0":
+        threading.Thread(target=_background, args=(stop,), daemon=True).start()
     yield
+    stop.set()
     STATE.clear()
 
 
 app = FastAPI(title="Amber Index API", version="0.1.0", lifespan=lifespan,
               description="Wildfire protection-gap score (0-100) for EU-27 countries. Higher = more danger relative to readiness.")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+@app.middleware("http")
+async def reload_when_artifacts_change(request: Request, call_next):
+    _maybe_reload()
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------- schemas
@@ -70,6 +144,12 @@ class Health(BaseModel):
     latest_year: int
     features: list[str]
     cv_metrics: list[CVMetric]
+    refreshed: str | None = None
+    loaded_at: str | None = None
+    data_end: dict | None = None
+    live_fetched_at: str | None = None
+    live_events: int | None = None
+    live_error: str | None = None
 
 
 class Country(BaseModel):
@@ -186,8 +266,12 @@ def _score(row: pd.Series) -> dict:
 @app.get("/health", response_model=Health)
 def health():
     m = STATE["metadata"]
+    lv = STATE.get("live", {})
     return Health(status="ok", created=m["created"], training_years=m["training_years"], model_years=m["model_years"],
-                  latest_year=m["latest_year"], features=m["feature_order"], cv_metrics=m["cv_metrics"])
+                  latest_year=m["latest_year"], features=m["feature_order"], cv_metrics=m["cv_metrics"],
+                  refreshed=m.get("refreshed"), loaded_at=STATE.get("loaded_at"), data_end=m.get("data_end"),
+                  live_fetched_at=lv.get("fetched_at"), live_events=None if "events" not in lv else len(lv["events"]),
+                  live_error=STATE.get("live_error"))
 
 
 class PillarWeight(BaseModel):
@@ -466,3 +550,75 @@ def optimize(body: AssistanceRequest):
     return AssistanceResponse(year=y, recipient=recipient, need=round(need, 1), covered=info["covered"],
                               shortfall=round(info["shortfall"], 1), mean_distance_km=info["mean_distance_km"],
                               available_capacity=round(info["available_capacity"], 1), incident=info["incident"], donors=donors)
+
+
+class LiveEvent(BaseModel):
+    iso2: str
+    type: str
+    alert: str
+    name: str | None
+    start: str | None
+    end: str | None
+
+
+class LiveCountry(SimRow):
+    events: int
+
+
+class LiveResponse(BaseModel):
+    fetched_at: str
+    window_days: int
+    baseline_year: int
+    events: list[LiveEvent]
+    countries: list[LiveCountry]
+    stretched: list[str]
+
+
+def _live_snapshot(refresh: bool) -> dict:
+    if refresh or "live" not in STATE:
+        try:
+            _refresh_live()
+        except Exception as e:
+            if "live" not in STATE:
+                raise HTTPException(503, f"Live hazard feed unavailable: {e}")
+            STATE["live_error"] = str(e)
+    return STATE["live"]
+
+
+@app.get("/live", response_model=LiveResponse)
+def live_now(refresh: bool = Query(False, description="Fetch GDACS now instead of using the hourly snapshot")):
+    snap = _live_snapshot(refresh)
+    ev = snap["events"]
+    y = int(STATE["df"]["year"].max())
+    shocks = live.active_shocks(ev)
+    res = run_scenario(_raw_table(y), shocks, STATE["preprocessor"], STATE["features"], STATE["final_weights"],
+                       STATE["scale"], STATE["metadata"].get("alpha", 0.5), y)
+    counts = ev.groupby("iso2").size() if len(ev) else pd.Series(dtype=int)
+    rows = [LiveCountry(iso2=i, name=NAMES[i], shocked=bool(r.shocked), power_before=round(r.power_before, 2),
+                        power_after=round(r.power_after, 2), power_change=round(r.power_change, 2),
+                        power_rank_before=int(r.power_rank_before), power_rank_after=int(r.power_rank_after),
+                        rank_change=int(r.rank_change), amber_before=round(r.amber_before, 2), amber_after=round(r.amber_after, 2),
+                        band_before=r.band_before, band_after=r.band_after, firefighters=round(r.firefighters),
+                        crew_demand=r.crew_demand, committed_share=round(r.committed_share, 4), unmet_demand=round(r.unmet_demand),
+                        events=int(counts.get(i, 0))) for i, r in res.iterrows()]
+    fmt = lambda t: None if pd.isna(t) else pd.Timestamp(t).isoformat()
+    events = [LiveEvent(iso2=e.iso2, type=e.eventtype, alert=e.alertlevel, name=e.name, start=fmt(e.start), end=fmt(e.end))
+              for e in ev.itertuples()]
+    return LiveResponse(fetched_at=snap["fetched_at"], window_days=snap["days"], baseline_year=y, events=events,
+                        countries=rows, stretched=[r.iso2 for r in rows if r.unmet_demand > 0])
+
+
+@app.get("/live/assistance", response_model=AssistanceResponse)
+def live_assistance(recipient: str, need: float | None = Query(None, gt=0), weight_location: float = Query(0.5, ge=0, le=1)):
+    ev = _live_snapshot(False)["events"]
+    shocks = [Shock(iso2=i, events=[HazardEvent(type=t, alert=a, count=c) for t, a, c in evs])
+              for i, evs in live.active_shocks(ev).items()]
+    if need is None and not any(sh.iso2 == recipient.upper() for sh in shocks):
+        raise HTTPException(422, f"No active hazards in {recipient.upper()}; pass need to plan anyway")
+    return optimize(AssistanceRequest(recipient=recipient, need=need, shocks=shocks, weight_location=weight_location))
+
+
+@app.post("/admin/reload")
+def admin_reload() -> dict:
+    _load(_artifacts_path())
+    return {"loaded_at": STATE["loaded_at"], "latest_year": int(STATE["df"]["year"].max())}

@@ -25,7 +25,8 @@ pressure it is under at the same time, `power = 100 · readiness · (1 − 0.5 �
 A country with strong services but many simultaneous hazards has less power to spare.
 
 **Simulations** force hazard events on any country. The annual hazard indicators rise, and the emergency ties up crews:
-each event demands firefighters by severity (Green 50, Orange 500, Red 2,000, an assumption), and power falls by the share
+each event demands firefighters by severity (Green 50, Orange 500, Red 2,000, an assumption; droughts count 10% and
+volcanoes 50% because they tie up few crews directly), and power falls by the share
 of the national workforce that demand consumes (capped at 95%; the rest is reported as unmet demand). In the latest year a
 multi-hazard emergency (Red flood, Red wildfire, Orange earthquake) drops the three strongest countries by 4 to 11 places;
 Cyprus, the smallest service, is left with about 3,200 firefighters of unmet demand.
@@ -93,9 +94,36 @@ curl -X POST localhost:8000/optimize/assistance -H 'Content-Type: application/js
 | `GET /simulate/presets` | named hazard shocks (major flood, earthquake, wildfire season, drought, multi-hazard) |
 | `POST /simulate` | force hazards on countries → power, ranks, crew demand and unmet demand before and after |
 | `POST /optimize/assistance` | recipient + need (or shocks that create one) → which countries send how many firefighters |
+| `GET /live` | disasters active now (GDACS, last 14 days) run through the simulator: today's power, crews tied up, who is stretched |
+| `GET /live/assistance?recipient=` | assistance plan using today's events (pass `need` to plan for a country that is not stretched) |
+| `POST /admin/reload` | reload artifacts after a refresh (also happens automatically) |
 
 Tests: `.venv/bin/python -m pytest`. A guided tour of every use case, against a running API: `./api/examples.sh`
 (set `BASE=` to point it at another host; needs `jq`).
+
+## Keeping it current
+
+The index keeps working as time passes and events happen, without code changes.
+
+| What changes | How it is picked up |
+|---|---|
+| Disasters happening now | The API pulls the GDACS alerts active in the last 14 days in a background thread every hour (snapshot kept in `data/raw/live_events.json`, so restarts are instant) and runs them through the simulator: `GET /live` shows today's power and who is stretched, `GET /live/assistance` plans help. |
+| New data for existing indicators (burned area, population, spending, hazards) | `python -m amber.refresh` downloads the sources again and re-scores every country-year with the trained model. New years appear automatically once burned area and population for them are published. |
+| A new Eurostat firefighter file | Add the news page to `SOURCES["firefighters_news"]` in `amber/__init__.py`, or drop the file into `data/manual/lfs/` with the year in its name (e.g. `firefighters-2025.xlsx`), and refresh. Years without a file keep using the nearest year, flagged `imputed`. |
+| Fire stations | `python -m amber.refresh --stations` (slow; OpenStreetMap changes little). |
+| The model itself | `python -m amber.refresh --retrain` re-runs the notebook: new scaling, model, weights and archetypes. |
+| The running API | Notices when `artifacts/metadata.json` changes and reloads; no restart. `POST /admin/reload` forces it. `GET /health` shows when data and live events were last refreshed. |
+
+Hazards are percentiles among EU countries in the same year and spending/firefighters carry the nearest year forward,
+so a new year with partial data stays comparable with the past. A daily refresh and a yearly retrain, e.g. with cron:
+
+```cron
+0 4 * * *  cd /path/to/amber-index && .venv/bin/python -m amber.refresh
+0 5 1 3 *  cd /path/to/amber-index && .venv/bin/python -m amber.refresh --retrain
+```
+
+Settings: `AMBER_LIVE=0` turns the live thread off, `AMBER_LIVE_TTL` (seconds, default 3600) and `AMBER_LIVE_DAYS`
+(default 14) tune it, `AMBER_ARTIFACTS` points the API at another artifacts folder.
 
 ## Validation
 

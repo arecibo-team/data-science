@@ -48,3 +48,12 @@ for w in 1 0; do
   curl -s -X POST "$BASE/optimize/assistance" -H "$JSON" -d "{\"recipient\": \"PT\", \"need\": 3000, \"incident_lat\": 40.2, \"incident_lon\": -8.4, \"weight_location\": $w}" \
     | jq -c "{weight_location: $w, mean_km: (.mean_distance_km|round), donors: [.donors[] | \"\(.iso2) \(.sent)\"]}"
 done
+
+step "12. Right now: which disasters are active, and who is stretched?" "curl $BASE/live"
+curl -s "$BASE/live" | jq -r '"snapshot \(.fetched_at), last \(.window_days) days, baseline \(.baseline_year); stretched: \(.stretched)", (.countries | sort_by(-.crew_demand) | .[:6][] | "  \(.iso2)\t\(.events) events\tcrews tied up \(.crew_demand)\tpower \(.power_before|round) -> \(.power_after|round)")'
+
+step "13. If Greece needed 1,500 firefighters today, who would send them?" "curl '$BASE/live/assistance?recipient=GR&need=1500'"
+curl -s "$BASE/live/assistance?recipient=GR&need=1500" | jq -r '"covered \(.covered) of \(.need)", (.donors[] | "  \(.iso2)\t\(.sent)\t\(.distance_km|round) km")'
+
+step "14. How fresh is everything?" "curl $BASE/health"
+curl -s "$BASE/health" | jq '{latest_year, refreshed, data_end, live_fetched_at, live_events}'

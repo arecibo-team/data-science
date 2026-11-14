@@ -8,6 +8,7 @@ from .power import ALPHA, add_power
 from .scoring import amber_score, band, gap, pillar_scores
 
 CREW_DEMAND = {"Green": 50, "Orange": 500, "Red": 2000}
+TYPE_FACTOR = {"DR": 0.1, "VO": 0.5}
 MAX_COMMITTED = 0.95
 
 PRESETS = {
@@ -25,7 +26,7 @@ def shock_load(events: list[tuple[str, str, int]], major_only: bool = False) -> 
 
 
 def crew_demand(events: list[tuple[str, str, int]]) -> float:
-    return float(sum(CREW_DEMAND.get(alert.capitalize(), 0) * count for _, alert, count in events))
+    return float(sum(CREW_DEMAND.get(alert.capitalize(), 0) * TYPE_FACTOR.get(kind, 1.0) * count for kind, alert, count in events))
 
 
 def apply_shocks(raw: pd.DataFrame, shocks: dict[str, list[tuple[str, str, int]]]) -> pd.DataFrame:

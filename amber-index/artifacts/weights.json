@@ -1,66 +1,66 @@
 {
-  "burned_share_pct": {
-    "pillar": "danger",
-    "w_ml": 1.0,
-    "w_equal": 1.0,
-    "w_final": 1.0
+ "burned_share_pct": {
+  "pillar": "danger",
+  "w_ml": 1.0,
+  "w_equal": 1.0,
+  "w_final": 1.0
+ },
+ "hazard_alerts": {
+  "pillar": "hazards",
+  "w_ml": 1.0,
+  "w_equal": 0.5,
+  "w_final": 0.75
+ },
+ "major_hazards": {
+  "pillar": "hazards",
+  "w_ml": 0.0,
+  "w_equal": 0.5,
+  "w_final": 0.25
+ },
+ "ff_per_100k": {
+  "pillar": "workforce",
+  "w_ml": 1.0,
+  "w_equal": 1.0,
+  "w_final": 1.0
+ },
+ "spend_per_capita": {
+  "pillar": "capability",
+  "w_ml": 0.38909771381947816,
+  "w_equal": 0.3333333333333333,
+  "w_final": 0.36121552357640574
+ },
+ "stations_per_1000km2": {
+  "pillar": "capability",
+  "w_ml": 0.49270914991654113,
+  "w_equal": 0.3333333333333333,
+  "w_final": 0.41302124162493725
+ },
+ "stations_per_100k": {
+  "pillar": "capability",
+  "w_ml": 0.11819313626398065,
+  "w_equal": 0.3333333333333333,
+  "w_final": 0.22576323479865698
+ },
+ "_pillars": {
+  "danger": {
+   "w_ml": 0.45355596536018095,
+   "w_equal": 0.25,
+   "w_final": 0.3517779826800905
   },
-  "hazard_alerts": {
-    "pillar": "hazards",
-    "w_ml": 1.0,
-    "w_equal": 0.5,
-    "w_final": 0.75
+  "hazards": {
+   "w_ml": 0.20373567220307132,
+   "w_equal": 0.25,
+   "w_final": 0.22686783610153566
   },
-  "major_hazards": {
-    "pillar": "hazards",
-    "w_ml": 0.0,
-    "w_equal": 0.5,
-    "w_final": 0.25
+  "workforce": {
+   "w_ml": 0.07094695684224744,
+   "w_equal": 0.25,
+   "w_final": 0.16047347842112372
   },
-  "ff_per_100k": {
-    "pillar": "workforce",
-    "w_ml": 1.0,
-    "w_equal": 1.0,
-    "w_final": 1.0
-  },
-  "spend_per_capita": {
-    "pillar": "capability",
-    "w_ml": 0.38909771381947816,
-    "w_equal": 0.3333333333333333,
-    "w_final": 0.36121552357640574
-  },
-  "stations_per_1000km2": {
-    "pillar": "capability",
-    "w_ml": 0.49270914991654113,
-    "w_equal": 0.3333333333333333,
-    "w_final": 0.41302124162493725
-  },
-  "stations_per_100k": {
-    "pillar": "capability",
-    "w_ml": 0.11819313626398065,
-    "w_equal": 0.3333333333333333,
-    "w_final": 0.22576323479865698
-  },
-  "_pillars": {
-    "danger": {
-      "w_ml": 0.45355596536018095,
-      "w_equal": 0.25,
-      "w_final": 0.3517779826800905
-    },
-    "hazards": {
-      "w_ml": 0.20373567220307132,
-      "w_equal": 0.25,
-      "w_final": 0.22686783610153566
-    },
-    "workforce": {
-      "w_ml": 0.07094695684224744,
-      "w_equal": 0.25,
-      "w_final": 0.16047347842112372
-    },
-    "capability": {
-      "w_ml": 0.27176140559450035,
-      "w_equal": 0.25,
-      "w_final": 0.2608807027972502
-    }
+  "capability": {
+   "w_ml": 0.27176140559450035,
+   "w_equal": 0.25,
+   "w_final": 0.2608807027972502
   }
+ }
 }
