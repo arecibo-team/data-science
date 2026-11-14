@@ -7,6 +7,7 @@
     GET /api/tiles/status      progress of the background tile generation
     GET /api/counts      totals for a range and box, for the heat overview
     GET /api/incidents   incident polygons overlapping a date range and bounding box
+    GET /api/weather     fire-weather features for a point and hour (NASA POWER / DWD ICON, cached in SQLite)
 
 The built web app (web/dist) is served from / when it exists. The pipeline runs in a background
 thread on start; the API serves whatever is in the database meanwhile.
@@ -29,7 +30,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import db, pipeline, settings, tilegen, tiles
+from . import db, fire_weather, pipeline, settings, tilegen, tiles
 
 log = logging.getLogger("server")
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -274,6 +275,20 @@ def api_incident(incident_id: str):
     if not r:
         raise HTTPException(404, "unknown incident")
     return dict(r)
+
+
+@app.get("/api/weather")
+def api_weather(lon: float, lat: float, time: str = Query(..., description="ISO 8601 with timezone, e.g. 2024-07-01T12:00:00Z"),
+                source: str = Query("auto", pattern="^(auto|nasa|dwd)$")):
+    """Fire-weather features for the hour containing `time`. `source=auto` uses DWD ICON (Open-Meteo) for the
+    last five days and up to six days ahead, NASA POWER for older times. Provider responses are cached in the
+    weather_cache table (NASA 30 days, DWD 15 minutes)."""
+    try:
+        return fire_weather.get_fire_weather(lon, lat, time, source=source)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    except fire_weather.WeatherDataError as exc:
+        raise HTTPException(502, str(exc))
 
 
 if WEB_DIST.is_dir():  # after the API routes so /api wins

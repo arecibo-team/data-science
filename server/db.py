@@ -7,6 +7,7 @@ Tables
     day_stats         per UTC day counts, served as the date index of the map
     bin_day           per day and 0.1 degree cell counts, the source of low-zoom heat tiles
     pipeline_steps    which pipeline steps ran, with what inputs, and how they ended
+    weather_cache     cached NASA POWER / DWD ICON responses for /api/weather
 
 Categorical detection columns are small integers. Code 0 means missing and the value lists
 live in ENUMS, which the API also hands to the web app, so the browser never hardcodes them.
@@ -80,6 +81,17 @@ CREATE TABLE IF NOT EXISTS bin_day (
 CREATE TABLE IF NOT EXISTS day_stats (
     date TEXT PRIMARY KEY, total INTEGER, modis INTEGER, viirs INTEGER, matched INTEGER, confirmed INTEGER
 );
+
+-- Raw provider responses of /api/weather (see server/fire_weather.py), keyed by sha256 of the request URL.
+CREATE TABLE IF NOT EXISTS weather_cache (
+    key        TEXT PRIMARY KEY,
+    provider   TEXT NOT NULL,       -- nasa_power | dwd_icon
+    url        TEXT NOT NULL,
+    fetched_at REAL NOT NULL,       -- unix seconds
+    expires_at REAL NOT NULL,
+    body       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_weather_expires ON weather_cache(expires_at);
 """
 
 BIN_DEG = 0.1  # cell size of bin_day, in degrees

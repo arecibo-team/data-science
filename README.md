@@ -61,7 +61,9 @@ Settings (environment): `FIRMS_START`, `FIRMS_BBOX` (default `-25,-20,45,72`), `
 ### API
 
 `/api/meta`, `/api/pipeline`, `/api/points`, `/api/counts`, `/api/incidents`, `/api/tiles/{z}/{x}/{y}.png`,
-`/api/tiles/status`. The map asks for the
+`/api/tiles/status`, `/api/weather?lon=&lat=&time=` (fire-weather features for a point and hour: NASA POWER for
+times over five days old, DWD ICON via Open-Meteo for recent days and up to six days ahead; `source=nasa|dwd`
+forces one; provider responses are cached in the `weather_cache` table, NASA 30 days, DWD 15 minutes). The map asks for the
 current view (date range plus bounding box). `/api/points` returns binary columns; when a view holds more than
 `FIRMS_MAX_POINTS` (60k) detections the map shows heat tiles instead (density on a log scale, orange MODIS,
 blue VIIRS, red = confirmed inside an incident).
