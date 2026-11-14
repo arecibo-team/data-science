@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import { CanvasPointLayer } from "./PointLayer";
@@ -11,6 +11,10 @@ interface Props {
   /** Heat tile URL template when the view is too dense for points; null otherwise. */
   tileUrl: string | null;
   incidents: IncidentFeature[];
+  /** Bare-ground overlay URL template (server/soiltiles.py), or null/undefined when off. */
+  soilUrl?: string | null;
+  /** Extra layers drawn inside the map, e.g. the forecast cells. */
+  children?: ReactNode;
   onPick: (i: number | null) => void;
   /** Called with the visible bounds and zoom level on load and when the view settles. */
   onView: (bounds: Bounds, zoom: number) => void;
@@ -74,6 +78,12 @@ function HeatTiles({ url }: { url: string | null }) {
   return <TileLayer url={url} zIndex={420} maxZoom={18} tileSize={256} opacity={0.95} />;
 }
 
+/** Bare-ground tiles under the heat tiles. */
+function SoilTiles({ url }: { url: string | null | undefined }) {
+  if (!url) return null;
+  return <TileLayer url={url} zIndex={410} maxZoom={18} tileSize={256} opacity={0.9} />;
+}
+
 /** Report the visible bounds and zoom on load and after every pan or zoom. */
 function ViewReporter({ onView }: Pick<Props, "onView">) {
   const map = useMapEvents({
@@ -94,10 +104,12 @@ export function MapView(props: Props) {
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
       />
+      <SoilTiles url={props.soilUrl} />
       <IncidentsOverlay incidents={props.incidents} />
       <PointsOverlay visible={props.visible} onPick={props.onPick} />
       <HeatTiles url={props.tileUrl} />
       <ViewReporter onView={props.onView} />
+      {props.children}
     </MapContainer>
   );
 }

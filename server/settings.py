@@ -41,3 +41,12 @@ TILE_CACHE_MB = int(os.environ.get("FIRMS_TILE_CACHE_MB", "2000"))
 # for the preset date ranges; deeper zooms are rendered when first requested. Cost grows about 3x per level.
 TILE_BG = os.environ.get("FIRMS_TILE_BG", "1") != "0"
 TILE_BG_MAX_ZOOM = int(os.environ.get("FIRMS_TILE_BG_MAX_ZOOM", "9"))
+
+# Daily weather features for the forecast model (NASA POWER, slow on first run, resumable).
+WEATHER = os.environ.get("FIRMS_WEATHER", "1") != "0"
+# Forecast model defaults.
+HORIZON = int(os.environ.get("FIRMS_HORIZON", "3"))
+TRAIN_END = os.environ.get("FIRMS_TRAIN_END", "2025-12-31")
+CHECKPOINT_EVERY = int(os.environ.get("FIRMS_CHECKPOINT_EVERY", "25"))
+# Label of the model: "confirmed" = the UI's COMMON layer (detections inside an EU incident), "both" = seen by MODIS and VIIRS.
+LABEL = os.environ.get("FIRMS_LABEL", "confirmed")

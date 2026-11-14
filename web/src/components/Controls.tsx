@@ -1,5 +1,6 @@
 import type { TileStatus } from "../data";
 import type { PipelineStep } from "../types";
+import { SoilControl, type SoilState } from "./SoilControl";
 import { type ConfFilter, type Filters, type LayerCounts, type LayerKey, type StatusFilter } from "../model";
 
 interface Props {
@@ -18,6 +19,8 @@ interface Props {
   tileStatus: TileStatus | null;
   /** Pipeline steps while the server is still building data; null when idle. */
   pipeline: PipelineStep[] | null;
+  soil: SoilState;
+  onSoil: (s: SoilState) => void;
 }
 
 const PRESETS: [string, number][] = [["3 days", 3], ["30 days", 30], ["1 year", 365], ["All", 0]];
@@ -32,7 +35,7 @@ function preset(dates: string[], days: number): Pick<Filters, "from" | "to"> {
   return { from: dates.find((d) => d >= want) ?? to, to };
 }
 
-export function Controls({ dates, filters, onChange, counts, stats, loading, overview, tileStatus, pipeline }: Props) {
+export function Controls({ dates, filters, onChange, counts, stats, loading, overview, tileStatus, pipeline, soil, onSoil }: Props) {
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch });
   const setLayer = (key: LayerKey, on: boolean) => set({ layers: { ...filters.layers, [key]: on } });
   const grid = overview !== null;
@@ -160,6 +163,8 @@ export function Controls({ dates, filters, onChange, counts, stats, loading, ove
             : "No detections in view."}
         </p>
       </fieldset>
+
+      <SoilControl soil={soil} onChange={onSoil} />
     </div>
   );
 }

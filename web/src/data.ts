@@ -122,3 +122,115 @@ export function pointAt(d: PointsData, i: number, enums: Enums): Point {
     incident: inc ? (d.incidents[inc - 1] ?? null) : null,
   };
 }
+
+// ---- forecast model ------------------------------------------------------
+
+export interface RunMetrics {
+  threshold: number;
+  horizon: number;
+  label?: string;
+  train_end: string;
+  test_rows: number;
+  pr_auc?: number;
+  base_rate?: number;
+  precision?: number;
+  recall?: number;
+  test_positives?: number;
+}
+
+export interface ModelRun {
+  id: number;
+  status: "running" | "done" | "failed" | "stopped" | "interrupted";
+  started_at: string;
+  finished_at: string | null;
+  rounds_done: number;
+  rounds_total: number;
+  metrics: RunMetrics | null;
+  message: string | null;
+  checkpoints: number;
+  last_checkpoint_round: number | null;
+  params: { horizon: number; lr: number; label?: string };
+}
+
+export interface Runs {
+  running: boolean;
+  current: number | null;
+  /** The run used for predictions: the newest completed one. */
+  active: number | null;
+  runs: ModelRun[];
+}
+
+export type TrainEvent =
+  | { type: "start"; run: number; total: number; resumed?: boolean }
+  | { type: "progress"; round: number; total: number; train_loss: number | null; val_loss: number | null }
+  | { type: "checkpoint"; round: number }
+  | { type: "done"; run: number; metrics: RunMetrics }
+  | { type: "stopped"; run: number }
+  | { type: "error"; run: number; message: string };
+
+export const loadRuns = (): Promise<Runs> => getJson<Runs>(api("model/runs"));
+export const modelStreamUrl = () => api("model/stream");
+
+async function post(path: string, body?: unknown): Promise<void> {
+  const r = await fetch(api(path), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const detail = await r.json().catch(() => null);
+    throw new Error(detail?.detail ?? `HTTP ${r.status}`);
+  }
+}
+export const startTraining = (rounds: number, horizon: number) => post("model/train", { rounds, horizon });
+export const stopTraining = () => post("model/stop");
+export const resumeTraining = (id: number) => post(`model/resume/${id}`);
+
+export interface Forecast {
+  run: number;
+  date: string;
+  /** The day the features come from: the forecast date, or the last day with data. */
+  feature_date: string;
+  horizon: number;
+  threshold: number;
+  /** True when every day of the window is already in the data, so hits and misses are final. */
+  complete: boolean;
+  lat: Float32Array;
+  lon: Float32Array;
+  p: Float32Array;
+  /** 1 where a COMMON fire really happened in the window. */
+  actual: Uint8Array;
+}
+
+/** GET /api/forecast: uint32 header length, JSON header, then lat, lon, p (f4) and actual (u1). */
+export async function loadForecast(date: string, signal?: AbortSignal): Promise<Forecast | null> {
+  const r = await fetch(api("forecast", { date }), { signal });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`forecast: HTTP ${r.status}`);
+  const buf = await r.arrayBuffer();
+  const hl = new DataView(buf).getUint32(0, true);
+  const head = JSON.parse(new TextDecoder().decode(buf.slice(4, 4 + hl)));
+  const n: number = head.n;
+  let off = 4 + hl;
+  const f32 = () => {
+    const a = new Float32Array(buf.slice(off, off + 4 * n)); // copy: the offset need not be 4-aligned
+    off += 4 * n;
+    return a;
+  };
+  const lat = f32(), lon = f32(), p = f32();
+  const actual = new Uint8Array(buf.slice(off, off + n));
+  return { ...head, lat, lon, p, actual };
+}
+
+// ---- soil ----------------------------------------------------------------
+
+export interface SoilClasses {
+  classes: string[];
+  colors: number[][];
+}
+export const loadSoilClasses = (): Promise<SoilClasses> => getJson<SoilClasses>(api("soil/classes"));
+/** Leaflet URL template of the bare-ground overlay. cls limits it to one class index. */
+export function soilUrl(cls: number | null): string {
+  const u = api("soil/tiles/0/0/0.png", cls === null ? {} : { cls });
+  return u.replace("soil/tiles/0/0/0.png", "soil/tiles/{z}/{x}/{y}.png").replace(/%7B/g, "{").replace(/%7D/g, "}");
+}

@@ -139,3 +139,20 @@ splits ranges into 5-day windows.
 ```
 uv run pytest
 ```
+
+## Fire forecast
+
+The **Forecast** tab has a timeline over all days (plus six future days), the detections of the selected day,
+and the cells where a LightGBM model expects a COMMON fire (a detection inside an EU incident) in the next
+`FIRMS_HORIZON` (3) days. For past days it marks hits, misses and false alarms against what was detected.
+
+- Train from the UI (Train / Stop / Resume). Progress and loss stream from `GET /api/model/stream` (SSE).
+  Weights go to `model_checkpoints` every `FIRMS_CHECKPOINT_EVERY` (25) rounds and on stop; after a crash the run is
+  `interrupted` and Resume continues from its checkpoint. Predictions use the newest `done` run.
+- Train on days up to `FIRMS_TRAIN_END` (2025-12-31), with a random 20% of those cell-days for validation;
+  every later day is the test set (PR-AUC, precision and recall are shown per run).
+- `FIRMS_LABEL=confirmed` (default, the UI's COMMON layer) or `both` (seen by MODIS and VIIRS).
+- Features: fire history per 0.1 degree cell (`bin_day`), neighbours, season, CORINE bare ground, and daily NASA POWER
+  weather on a 1 degree grid. The `context` step embeds `context-data/` into `soil_cells` and `soil_squares`.
+  The `weather` step is slow on first run and resumable (`FIRMS_WEATHER=0` or `PIPELINE_SKIP=weather` skips it).
+- API: `/api/model/{train,stop,resume/{id},runs,stream}`, `/api/forecast?date=`, `/api/soil/tiles/{z}/{x}/{y}.png?cls=`.

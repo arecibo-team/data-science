@@ -6,6 +6,7 @@
     ems          Copernicus EMS wildfire areas -> incidents table   (network, once per day)
     sentinel2    Sentinel-2 burn scars -> incidents table           (network, slow, resumable)
     tag          mark detections that fall inside an incident
+    context      embed context-data (CORINE bare ground) into the soil tables
     stats        per-day counts, per-cell counts (bin_day) and per-incident detection counts
 
 Every step reads its settings from `server.settings`, so a changed setting is a new fingerprint
@@ -25,7 +26,7 @@ from firms.match import tag_incidents
 from firms.region import in_africa
 from firms.normalize import load_normalized, normalize_all
 
-from .. import db, settings
+from .. import context, db, settings, weather_grid
 from . import store
 from .runner import STEPS, Plan, Step
 
@@ -180,6 +181,27 @@ def _stats_run() -> int:
         return con.execute("SELECT COUNT(*) FROM day_stats").fetchone()[0]
 
 
+# ---------------------------------------------------------------- context, weather
+
+def _context_plan() -> Plan:
+    d = context.digest()
+    return Plan({"files": d}) if d else Plan(skip="context-data files missing")
+
+
+def _context_run() -> int:
+    return context.load()
+
+
+def _weather_plan() -> Plan:
+    if not settings.WEATHER:
+        return Plan(skip="FIRMS_WEATHER=0")
+    return Plan({"start": settings.FETCH_START, "end": weather_grid.end_date()})
+
+
+def _weather_run() -> int:
+    return weather_grid.run(settings.FETCH_START)
+
+
 STEPS.extend([
     Step("fetch", "Download FIRMS CSVs", _fetch_plan, _fetch_run),
     Step("normalize", "Normalize raw CSVs", _normalize_plan, _normalize_run, soft=("fetch",)),
@@ -188,4 +210,6 @@ STEPS.extend([
     Step("sentinel2", "Sentinel-2 burn scars", _s2_plan, _s2_run, deps=("harmonize",)),
     Step("tag", "Tag detections with incidents", _tag_plan, _tag_run, deps=("harmonize",), soft=("ems", "sentinel2")),
     Step("stats", "Day, cell and incident counts", _stats_plan, _stats_run, deps=("tag",)),
+    Step("context", "Embed context-data (soil)", _context_plan, _context_run),
+    Step("weather", "Daily weather on a 1 degree grid", _weather_plan, _weather_run, soft=("stats",)),
 ])

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import queue
 import struct
 import threading
 from contextlib import asynccontextmanager
@@ -27,10 +28,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-from . import db, fire_weather, pipeline, settings, tilegen, tiles
+from . import db, fire_weather, pipeline, settings, soiltiles, tilegen, tiles
+from .ml import jobs as ml_jobs, predict as ml_predict, train as ml_train
 
 log = logging.getLogger("server")
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -68,6 +72,7 @@ def start_pipeline() -> bool:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     db.init_db()
+    ml_train.mark_interrupted()
     if settings.RUN_ON_START:
         start_pipeline()
     if settings.TILE_BG:
@@ -289,6 +294,125 @@ def api_weather(lon: float, lat: float, time: str = Query(..., description="ISO 
         raise HTTPException(422, str(exc))
     except fire_weather.WeatherDataError as exc:
         raise HTTPException(502, str(exc))
+
+
+# ---------------------------------------------------------------- forecast model
+
+class TrainRequest(BaseModel):
+    rounds: int = Field(300, ge=1, le=5000)
+    lr: float = Field(0.05, gt=0, le=1)
+    horizon: int = Field(settings.HORIZON, ge=1, le=14)
+
+
+@app.post("/api/model/train")
+def api_model_train(req: TrainRequest):
+    """Start a training run in the background. Progress is streamed from /api/model/stream."""
+    run_id = ml_jobs.job.start(req.model_dump())
+    if run_id is None:
+        raise HTTPException(409, "a training run is already in progress")
+    return {"run": run_id}
+
+
+@app.post("/api/model/resume/{run_id}")
+def api_model_resume(run_id: int):
+    run = ml_train.get_run(run_id)
+    if not run:
+        raise HTTPException(404, "no such run")
+    if run["status"] not in ("stopped", "interrupted", "failed"):
+        raise HTTPException(409, f"run is {run['status']}")
+    if ml_jobs.job.start(resume_id=run_id) is None:
+        raise HTTPException(409, "a training run is already in progress")
+    return {"run": run_id}
+
+
+@app.post("/api/model/stop")
+def api_model_stop():
+    return {"stopping": ml_jobs.job.stop()}
+
+
+@app.get("/api/model/runs")
+def api_model_runs():
+    active = ml_predict.latest_run()
+    return {"running": ml_jobs.job.running(), "current": ml_jobs.job.run_id if ml_jobs.job.running() else None,
+            "active": active["id"] if active else None, "runs": ml_train.list_runs()}
+
+
+@app.get("/api/model/runs/{run_id}")
+def api_model_run(run_id: int):
+    run = ml_train.get_run(run_id)
+    if not run:
+        raise HTTPException(404, "no such run")
+    return run
+
+
+@app.get("/api/model/stream")
+def api_model_stream():
+    """Server-sent events: start, progress (round, train_loss, val_loss), checkpoint, done, stopped, error.
+    On connect, the history of the current run is replayed first."""
+    job = ml_jobs.job
+    q = job.subscribe()
+    replay = []
+    if job.running() and job.run_id is not None:
+        run = ml_train.get_run(job.run_id)
+        if run:
+            replay = [{"type": "progress", "round": h["round"], "total": run["rounds_total"],
+                       "train_loss": h["train"], "val_loss": h["val"], "replay": True} for h in run["loss_history"]]
+            replay.insert(0, {"type": "start", "run": run["id"], "total": run["rounds_total"], "replay": True})
+
+    def gen():
+        try:
+            for ev in replay:
+                yield f"data: {json.dumps(ev)}\n\n"
+            while True:
+                try:
+                    ev = q.get(timeout=15)
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+                    if not job.running() and q.empty():
+                        return
+                    continue
+                yield f"data: {json.dumps(ev)}\n\n"
+        finally:
+            job.unsubscribe(q)
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/forecast")
+def api_forecast(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
+    """Cells with the probability of a common fire in the next `horizon` days, for a forecast made on `date`
+    (clamped to the last day with data). Binary: uint32 header length, JSON header, then lat, lon, p (f4) and
+    actual (u1: a common fire really happened in the window)."""
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(422, "bad date")
+    f = ml_predict.forecast(date)
+    if f is None:
+        raise HTTPException(404, "no completed model run yet")
+    head = json.dumps({k: f[k] for k in ("run", "date", "feature_date", "horizon", "threshold", "complete")}
+                      | {"n": len(f["p"])}).encode()
+    body = struct.pack("<I", len(head)) + head + f["lat"].tobytes() + f["lon"].tobytes() + f["p"].tobytes() + f["actual"].tobytes()
+    return Response(body, media_type="application/octet-stream")
+
+
+@app.get("/api/soil/tiles/{z}/{x}/{y}.png")
+def api_soil_tile(z: int, x: int, y: int, cls: int | None = Query(None, ge=0, le=8)):
+    """Bare-ground overlay tile from the embedded context data. cls limits it to one class (0..8)."""
+    if not (0 <= z <= tiles.MAX_ZOOM and 0 <= x < 2 ** z and 0 <= y < 2 ** z):
+        raise HTTPException(404, "no such tile")
+    con = db.connect(readonly=True)
+    try:
+        png = soiltiles.render(con, z, x, y, cls)
+    finally:
+        con.close()
+    return Response(png or tiles.empty_tile(), media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/api/soil/classes")
+def api_soil_classes():
+    from . import context
+    return {"classes": context.SOIL_CLASSES, "colors": soiltiles.COLORS.astype(int).tolist()}
 
 
 if WEB_DIST.is_dir():  # after the API routes so /api wins

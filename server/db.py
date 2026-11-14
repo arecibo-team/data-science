@@ -92,6 +92,42 @@ CREATE TABLE IF NOT EXISTS weather_cache (
     body       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_weather_expires ON weather_cache(expires_at);
+-- CORINE bare ground, embedded from context-data by the `context` step. Cell index = floor((coord + offset) / 0.25).
+CREATE TABLE IF NOT EXISTS soil_cells (
+    r4 INTEGER NOT NULL, c4 INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL,
+    sand REAL, rock REAL, sparse REAL, burnt REAL, glacier REAL, intertidal REAL,
+    quarry REAL, dump REAL, construction REAL,
+    PRIMARY KEY (r4, c4)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS soil_squares (    -- 1.6 km squares with at least 25% bare ground
+    lat REAL NOT NULL, lon REAL NOT NULL, class INTEGER NOT NULL, class_pct REAL, all_bare_pct REAL
+);
+CREATE INDEX IF NOT EXISTS ix_soil_sq ON soil_squares(lat, lon);
+
+-- Daily weather on a 1 degree grid (see server/weather_grid.py), the model's weather features.
+CREATE TABLE IF NOT EXISTS weather_grid (
+    r1 INTEGER NOT NULL, c1 INTEGER NOT NULL, date TEXT NOT NULL,
+    t2m REAL, rh REAL, ws REAL, prec REAL, gwettop REAL, gwetroot REAL, gwetprof REAL,
+    PRIMARY KEY (r1, c1, date)
+) WITHOUT ROWID;
+
+-- Forecast model runs and their weights (server/ml). One rolling checkpoint per run, plus the final model.
+CREATE TABLE IF NOT EXISTS model_runs (
+    id INTEGER PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status IN ('running','done','failed','stopped','interrupted')),
+    params TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT,
+    rounds_done INTEGER NOT NULL DEFAULT 0, rounds_total INTEGER NOT NULL,
+    metrics TEXT, loss_history TEXT NOT NULL DEFAULT '[]', message TEXT
+);
+CREATE TABLE IF NOT EXISTS model_checkpoints (
+    id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL, round INTEGER NOT NULL, created_at TEXT NOT NULL,
+    train_loss REAL, val_loss REAL, is_final INTEGER NOT NULL DEFAULT 0, weights BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_ckpt_run ON model_checkpoints(run_id, id);
+CREATE TABLE IF NOT EXISTS forecast_cache (
+    run_id INTEGER NOT NULL, date TEXT NOT NULL, r INTEGER NOT NULL, c INTEGER NOT NULL, p REAL NOT NULL,
+    PRIMARY KEY (run_id, date, r, c)
+) WITHOUT ROWID;
 """
 
 BIN_DEG = 0.1  # cell size of bin_day, in degrees

@@ -19,6 +19,7 @@ dependencies = [
   "xarray>=2026.9.0",
   "fastapi>=0.163.0",
   "uvicorn>=0.54.0",
+  "lightgbm>=4.7.0",
 ]
 
 [dependency-groups]

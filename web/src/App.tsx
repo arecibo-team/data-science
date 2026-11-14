@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadCounts, loadIncidents, loadMeta, loadPipeline, loadPoints, loadTileStatus, pointAt, tileUrl, type Counts, type Query, type TileStatus } from "./data";
 import { MapView } from "./components/MapView";
 import { Controls } from "./components/Controls";
+import { ForecastView } from "./components/ForecastView";
+import type { SoilState } from "./components/SoilControl";
+import { soilUrl } from "./data";
 import { SENSOR_COLOR } from "./components/PointLayer";
 import { scanPoints, type Filters, type LayerCounts } from "./model";
 import type { Bounds, IncidentFeature, IncidentProperties, Meta, PipelineStep, Point, PointsData } from "./types";
@@ -48,6 +51,8 @@ export default function App() {
   const [dataVersion, setDataVersion] = useState(0);
   const [tileStatus, setTileStatus] = useState<TileStatus | null>(null);
   const loaded = useRef<Loaded | null>(null);
+  const [mode, setMode] = useState<"map" | "forecast">("map");
+  const [soil, setSoil] = useState<SoilState>({ on: false, cls: null });
 
   const dates = useMemo(() => (meta ? Object.keys(meta.days).sort() : []), [meta]);
   const from = filters?.from ?? "";
@@ -220,10 +225,24 @@ export default function App() {
     );
   }
 
+  const header = (
+    <>
+      <h1>FIRMS hotspots</h1>
+      <div className="tabs" role="tablist">
+        <button type="button" role="tab" aria-selected={mode === "map"} onClick={() => setMode("map")}>Map</button>
+        <button type="button" role="tab" aria-selected={mode === "forecast"} onClick={() => setMode("forecast")}>Forecast</button>
+      </div>
+    </>
+  );
+
+  if (mode === "forecast") {
+    return <ForecastView dates={dates} generatedUtc={meta.generated_utc ?? "0"} header={header} />;
+  }
+
   return (
     <div className="app">
       <aside className="sidebar">
-        <h1>FIRMS hotspots</h1>
+        {header}
         <p className="muted small">
           MODIS (Terra/Aqua) and VIIRS (SNPP/NOAA-20/NOAA-21) active fires. Data updated {meta.generated_utc ?? "never"}.
         </p>
@@ -237,6 +256,8 @@ export default function App() {
           overview={overview}
           tileStatus={tileStatus}
           pipeline={running ? steps : null}
+          soil={soil}
+          onSoil={setSoil}
         />
         {error && <p className="error">{error}</p>}
 
@@ -276,6 +297,7 @@ export default function App() {
           visible={scan?.visible ?? null}
           tileUrl={overview ? tileUrl(from, to, layerMask, meta.generated_utc ?? "0") : null}
           incidents={showIncidents}
+          soilUrl={soil.on ? soilUrl(soil.cls) : null}
           onPick={onPick}
           onView={onView}
         />

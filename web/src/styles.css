@@ -86,3 +86,16 @@ dd { margin: 0; }
 .presets { display: flex; gap: 4px; margin-bottom: 8px; }
 .presets button { flex: 1; padding: 4px 0; font: inherit; border: 1px solid var(--border); border-radius: 4px; background: var(--panel); color: var(--text); cursor: pointer; }
 .presets button:hover { border-color: var(--viirs); }
+.tabs { display: flex; gap: 4px; margin: 8px 0; }
+.tabs button { flex: 1; padding: 6px 0; font: inherit; border: 1px solid var(--border); border-radius: 4px; background: var(--panel); color: var(--text); cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--viirs); border-color: var(--viirs); color: #fff; }
+.slider { width: 100%; margin: 6px 0 8px; }
+.timeline-day { font-size: 15px; }
+.train input[type="number"] { width: 100%; box-sizing: border-box; margin: 4px 0 8px; font: inherit; }
+.train progress { width: 100%; }
+.train .presets button:disabled { opacity: 0.45; cursor: default; }
+.loss { width: 100%; height: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+.runs { padding-left: 16px; margin: 8px 0 0; }
+.runs li { margin-bottom: 6px; }
+.runs .active-run { border-left: 3px solid var(--viirs); padding-left: 6px; margin-left: -9px; }
+.soil-legend { margin-top: 6px; gap: 2px; font-size: 12px; }
