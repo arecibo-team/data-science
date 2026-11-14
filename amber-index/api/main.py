@@ -28,6 +28,7 @@ from amber.features import FEATURES, PILLARS, compute_rates
 from amber.model import load_artifacts
 from amber.power import power_index
 from amber.optimize import AssistanceParams, donor_table, haversine_km, optimize_assistance, plan_assistance
+from amber.area import AreaData, bbox_area_km2
 from amber.replay import FireData, eta_hours, resources
 from amber.simulate import PRESETS, run_scenario
 from amber.scoring import amber_score, band, contributions, gap, pillar_scores, reason_text
@@ -54,6 +55,8 @@ def _load(path: Path) -> None:
            "df": pd.DataFrame(art["scores"]), "explainer": shap.TreeExplainer(art["model"]),
            "artifacts_mtime": (path / "metadata.json").stat().st_mtime, "loaded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
            "fires": FireData(path / "fires") if (path / "fires" / "events.json").exists() else None}
+    fd = new["fires"]
+    new["area"] = AreaData(path / "fires", fd.events, fd.meta) if fd is not None and (path / "fires" / "detections.npz").exists() else None
     with LOCK:
         STATE.update(new)
 
@@ -810,6 +813,195 @@ def history(iso2: str, date: str | None = None):
                            normal=Normal(**fd.normal(iso2, d)), outlook=Outlook(**fd.outlook(iso2, d)),
                            largest_fires=fd.largest(iso2, d), analog=Analog(**an) if an else None,
                            validation_error_pct=fd.meta["validation"].get(iso2, {}).get("mean_abs_error_pct"))
+
+
+class RangeYear(BaseModel):
+    year: int
+    value: float
+
+
+class RangeNormal(BaseModel):
+    value: float
+    median: float
+    mean: float
+    ratio: float | None
+    anomaly_pct: float | None
+    z_score: float | None
+    rank: int
+    years: int
+    by_year: list[RangeYear]
+
+
+class AreaSummary(BaseModel):
+    days: int
+    harmonized_cell_days: float
+    modis_cell_days: int
+    viirs_cell_days: int
+    detections: int
+    detections_by_sensor: dict[str, int]
+    night_share: float
+    mean_frp: float
+    max_frp: float
+    fires: int
+    busiest_day: str | None
+
+
+class SeriesPoint(BaseModel):
+    date: str
+    harmonized: float
+    modis: int
+    viirs: int
+
+
+class AreaSeries(BaseModel):
+    unit: Literal["day", "month"]
+    values: list[SeriesPoint]
+
+
+class AreaFire(BaseModel):
+    name: str
+    iso2: str
+    start: str
+    end: str
+    lat: float
+    lon: float
+    detections: int
+    area_ha: int
+
+
+class AreaCountry(BaseModel):
+    iso2: str
+    name: str
+    detections: int
+
+
+class AreaResponse(BaseModel):
+    kind: Literal["country", "box"]
+    iso2: str | None
+    name: str
+    bbox: list[float] | None
+    area_km2: float | None
+    start: str
+    end: str
+    date: str
+    first_year: int
+    data_start: str
+    data_end: str
+    months: list[MonthCell]
+    normal: Normal
+    range_normal: RangeNormal | None
+    outlook: Outlook
+    analog: Analog | None
+    largest_fires: list[LargeFire]
+    summary: AreaSummary
+    series: AreaSeries
+    fires: list[AreaFire]
+    countries: list[AreaCountry]
+    validation_error_pct: float | None
+
+
+DATA_START = Date(2001, 1, 1)
+
+
+def _area_args(bbox: str | None, country: str | None, start: str | None, end: str | None, asof: str | None = None):
+    ad = STATE.get("area")
+    if ad is None:
+        raise HTTPException(503, "Detection store is not built. Run: python -c 'from amber.area import build_store; ...'")
+    if bool(bbox) == bool(country):
+        raise HTTPException(422, "Give either bbox=west,south,east,north or country=ISO2")
+    box = None
+    if country:
+        country = country.upper().replace("EL", "GR")
+        if country not in NAMES:
+            raise HTTPException(404, f"Unknown country '{country}'")
+    else:
+        try:
+            box = tuple(float(v) for v in bbox.split(","))
+        except ValueError:
+            raise HTTPException(422, "bbox must be four numbers: west,south,east,north")
+        if len(box) != 4 or not (-180 <= box[0] < box[2] <= 180 and -90 <= box[1] < box[3] <= 90):
+            raise HTTPException(422, "bbox must be west,south,east,north with west < east and south < north")
+    try:
+        b = Date.fromisoformat(end) if end else Date(2021, 8, 8)
+        a = Date.fromisoformat(start) if start else b.replace(day=1)
+        at = max(Date.fromisoformat(asof), b) if asof else b
+    except ValueError:
+        raise HTTPException(422, "Dates must be YYYY-MM-DD")
+    if a > b:
+        raise HTTPException(422, "start must be on or before end")
+    if a < DATA_START or at > ad.end:
+        raise HTTPException(422, f"Dates must be between {DATA_START} and {ad.end}")
+    return ad, box, country, a, b, at
+
+
+def _area_label(box, country) -> str:
+    if country:
+        return NAMES[country]
+    w, s, e, n = box
+    ns = lambda v: f"{abs(v):.2f}°{'N' if v >= 0 else 'S'}"
+    ew = lambda v: f"{abs(v):.2f}°{'E' if v >= 0 else 'W'}"
+    return f"{ns(s)} to {ns(n)}, {ew(w)} to {ew(e)}"
+
+
+def _slug(box, country, a, b) -> str:
+    where = country or "box_" + "_".join(f"{v:.2f}" for v in box)
+    return f"arecibo-{where}-{a.isoformat()}-{b.isoformat()}"
+
+
+@app.get("/area", response_model=AreaResponse)
+def area(bbox: str | None = Query(None, description="west,south,east,north in degrees"),
+         country: str | None = Query(None, description="EU country ISO2, instead of bbox"),
+         start: str | None = Query(None, description="YYYY-MM-DD, default first day of the end month"),
+         end: str | None = Query(None, description="YYYY-MM-DD, default 2021-08-08"),
+         asof: str | None = Query(None, description="YYYY-MM-DD the calendar and the 'is this normal' card are read at, default end")):
+    ad, box, country, a, b, at = _area_args(bbox, country, start, end, asof)
+    r = ad.query(box, country, a, b, at)
+    return AreaResponse(kind="country" if country else "box", iso2=country, name=_area_label(box, country),
+                        bbox=list(box) if box else None, area_km2=round(bbox_area_km2(box)) if box else None,
+                        start=a.isoformat(), end=b.isoformat(), date=at.isoformat(), first_year=2001,
+                        data_start=DATA_START.isoformat(), data_end=ad.end.isoformat(),
+                        validation_error_pct=ad.validation.get(country, {}).get("mean_abs_error_pct") if country else None, **r)
+
+
+@app.get("/area/hotspots.csv", response_class=PlainTextResponse)
+def area_hotspots(bbox: str | None = None, country: str | None = None, start: str | None = None, end: str | None = None):
+    ad, box, country, a, b, _ = _area_args(bbox, country, start, end)
+    text, rows, cut = ad.hotspots_csv(box, country, a, b)
+    headers = {"Content-Disposition": f'attachment; filename="{_slug(box, country, a, b)}-hotspots.csv"', "X-Rows": str(rows),
+               "X-Truncated": str(cut).lower(), "Access-Control-Expose-Headers": "X-Rows, X-Truncated"}
+    return PlainTextResponse(text, media_type="text/csv", headers=headers)
+
+
+@app.get("/area/calendar.csv", response_class=PlainTextResponse)
+def area_calendar(bbox: str | None = None, country: str | None = None, start: str | None = None, end: str | None = None,
+                  asof: str | None = None):
+    ad, box, country, a, b, at = _area_args(bbox, country, start, end, asof)
+    s = ad.series(ad.select(box, country))
+    lines = ["year,month,harmonized_cell_days,modis_cell_days,viirs_cell_days,harmonized_source,partial_month,in_selected_range"]
+    for c in ad.calendar(s, at):
+        if c["harmonized"] is None:
+            continue
+        lo = Date(c["year"], c["month"], 1)
+        hi = min((lo.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1), at)
+        lines.append(f"{c['year']},{c['month']},{c['harmonized']},{round(ad.window(s['modis'], lo, hi))},{round(ad.window(s['viirs'], lo, hi))},"
+                     f"{'MODIS x ratio' if c['modelled'] else 'VIIRS'},{int(c['partial'])},{int(hi >= a and lo <= b)}")
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/csv",
+                             headers={"Content-Disposition": f'attachment; filename="{_slug(box, country, a, b)}-calendar.csv"'})
+
+
+@app.get("/area/daily.csv", response_class=PlainTextResponse)
+def area_daily(bbox: str | None = None, country: str | None = None, start: str | None = None, end: str | None = None):
+    ad, box, country, a, b, _ = _area_args(bbox, country, start, end)
+    s = ad.series(ad.select(box, country))
+    lines = ["date,harmonized_cell_days,modis_cell_days,viirs_cell_days,harmonized_source"]
+    cur = a
+    while cur <= b:
+        i = ad.idx(cur)
+        lines.append(f"{cur.isoformat()},{round(float(s['harmonized'][i]), 2)},{int(s['modis'][i])},{int(s['viirs'][i])},"
+                     f"{'MODIS x ratio' if i < ad.viirs_from else 'VIIRS'}")
+        cur += timedelta(days=1)
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/csv",
+                             headers={"Content-Disposition": f'attachment; filename="{_slug(box, country, a, b)}-daily.csv"'})
 
 
 SCENARIOS = {"wildfire_season": [("WF", "Orange", 3)], "several_hazards": PRESETS["multi_hazard"],

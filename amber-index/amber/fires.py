@@ -82,8 +82,8 @@ def _concat(frames: list, cols: list[str]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame({c: pd.Series(dtype=float) for c in cols})
 
 
-def load_detections(iso2: str) -> pd.DataFrame:
-    cols = ["latitude", "longitude", "acq_date", "acq_time", "satellite", "confidence", "frp", "type"]
+def load_detections(iso2: str, extra: bool = False) -> pd.DataFrame:
+    cols = ["latitude", "longitude", "acq_date", "acq_time", "satellite", "confidence", "frp", "type", "daynight"]
     v = _concat([_read(FIRMS_DIR / "viirs" / f"{iso2}_{y}.csv", cols) for y in SENSORS["viirs"][1]], cols)
     m = _concat([_read(FIRMS_DIR / "modis" / f"{iso2}_{y}.csv", cols) for y in SENSORS["modis"][1]], cols)
     v["confidence"] = v["confidence"].astype(str)
@@ -101,7 +101,8 @@ def load_detections(iso2: str) -> pd.DataFrame:
     d["cx"] = np.floor(d["lon"] / GRID).astype(np.int32)
     keep = [(a, b) not in mask for a, b in zip(d["cy"], d["cx"])]
     d = d[keep]
-    return d[["lat", "lon", "date", "time", "sensor", "frp", "cy", "cx"]].reset_index(drop=True)
+    keep_cols = ["lat", "lon", "date", "time", "sensor", "frp", "cy", "cx"] + (["confidence", "daynight"] if extra else [])
+    return d[keep_cols].reset_index(drop=True)
 
 
 def cell_days(d: pd.DataFrame) -> pd.DataFrame:
@@ -276,4 +277,6 @@ def build(out: Path | None = None, verbose: bool = True) -> dict:
             "ratio": {k: [round(float(x), 4) for x in v] for k, v in ratios.items()}, "validation": validation,
             "fires": len(fires), "source": "NASA FIRMS country archives: MODIS C6.1 and VIIRS S-NPP 375 m; places: GeoNames"}
     write_json_atomic(out / "meta.json", meta)
+    from .area import build_store
+    build_store(out, verbose)
     return meta

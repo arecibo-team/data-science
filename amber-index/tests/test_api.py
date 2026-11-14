@@ -294,3 +294,53 @@ def test_plan(client):
     etas = [d["eta_h"] for d in body["donors"]]
     assert etas == sorted(etas)
     assert all(lo["iso2"] not in {d["iso2"] for d in body["donors"]} for lo in body["left_out"])
+
+
+def test_area_box_matches_range(client):
+    r = client.get("/area", params={"bbox": "22.5,37.8,24.5,39.3", "start": "2021-07-25", "end": "2021-08-15"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["kind"] == "box" and body["series"]["unit"] == "day" and len(body["series"]["values"]) == 22
+    s = body["summary"]
+    assert s["detections"] == sum(s["detections_by_sensor"].values())
+    assert abs(sum(v["harmonized"] for v in body["series"]["values"]) - s["harmonized_cell_days"]) < 1
+    assert body["range_normal"]["rank"] >= 1
+
+
+def test_area_country_matches_history(client):
+    a = client.get("/area", params={"country": "GR", "end": "2021-08-08"}).json()
+    h = client.get("/history/GR", params={"date": "2021-08-08"}).json()
+    for x, y in zip(a["months"], h["months"]):
+        if x["harmonized"] is not None:
+            assert abs(x["harmonized"] - y["harmonized"]) < 0.5
+    assert a["normal"]["rank"] == h["normal"]["rank"]
+
+
+def test_area_long_range_is_monthly(client):
+    body = client.get("/area", params={"country": "PT", "start": "2015-01-01", "end": "2020-12-31"}).json()
+    assert body["series"]["unit"] == "month" and len(body["series"]["values"]) == 72
+    assert body["range_normal"] is None
+
+
+def test_area_csv_exports(client):
+    params = {"bbox": "22.5,37.8,24.5,39.3", "start": "2021-08-01", "end": "2021-08-10"}
+    hot = client.get("/area/hotspots.csv", params=params)
+    assert hot.status_code == 200 and hot.text.startswith("latitude,longitude,acq_date")
+    assert int(hot.headers["x-rows"]) == len(hot.text.strip().splitlines()) - 1
+    daily = client.get("/area/daily.csv", params=params).text.strip().splitlines()
+    assert len(daily) == 11
+    cal = client.get("/area/calendar.csv", params=params).text
+    assert "2021,8," in cal
+
+
+def test_area_rejects_bad_input(client):
+    assert client.get("/area", params={"bbox": "1,2,3"}).status_code == 422
+    assert client.get("/area", params={"country": "GR", "bbox": "1,2,3,4"}).status_code == 422
+    assert client.get("/area", params={"country": "GR", "start": "2021-08-10", "end": "2021-08-01"}).status_code == 422
+    assert client.get("/area", params={"country": "XX"}).status_code == 404
+
+
+def test_area_asof_keeps_calendar(client):
+    body = client.get("/area", params={"country": "GR", "start": "2007-08-01", "end": "2007-08-31", "asof": "2021-08-08"}).json()
+    assert body["date"] == "2021-08-08" and body["months"][-1]["year"] == 2021
+    assert body["summary"]["days"] == 31 and body["range_normal"]["rank"] <= 3
