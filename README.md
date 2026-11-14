@@ -20,23 +20,48 @@ analysis and a simple React map.
    cd web && bun install
    ```
 
-## Pipeline
+## Running
 
 ```
-# 1. download raw CSVs (resumable; existing files are skipped)
-uv run python -m firms.fetch --start 2025-08-01 --end 2025-08-31 --bbox 15,-20,35,-5
-
-# 2. independent European incidents
-uv run python -m firms.incidents                   # Copernicus EMS areas + confirmed Sentinel-2 scars
-uv run python -m firms.sentinel2 --max-events 300  # optional, slow: Sentinel-2 burn-scar check (resumable)
-
-# 3. normalize -> harmonize -> incident match -> analysis tables -> web export
-uv run python -m firms.build                       # 1 km, 180 min match window
-uv run python -m firms.build --radius-km 0.75 --window-min 120
-
-# 4. run the map
-cd web && bun run dev         # or: bun run build && bun run preview
+cd web && bun run build && cd ..   # once, and after web changes
+uv run python -m server            # http://127.0.0.1:8000
 ```
+
+The Python server (FastAPI + SQLite, `data/firms.db`) runs every pipeline step on start in a background
+thread and serves the map and its API meanwhile. For web development run `bun run dev` in `web/`;
+it proxies `/api` to the server.
+
+### Pipeline steps and the ledger
+
+| Step | Does | Reruns when |
+| --- | --- | --- |
+| `fetch` | FIRMS CSVs into `data/raw` (needs `KEY` in `.env`) | the fetch window changes (end = today, so once a day) |
+| `normalize` | raw CSVs into `data/normalized` parquet | the set of raw files changes |
+| `harmonize` | MODIS/VIIRS clusters, writes the `detections` and `clusters` tables | `normalize` reran, or the match radius/window changed |
+| `ems` | Copernicus EMS areas into `incidents` | once a day |
+| `sentinel2` | Sentinel-2 burn scars into `incidents` (slow, resumable) | `harmonize` reran |
+| `tag` | marks detections inside an incident | `harmonize` reran or the incidents changed |
+| `stats` | per-day and per-incident counts | `tag` reran |
+
+The `pipeline_steps` table records each run (inputs, status, duration, rows, error). A step is skipped when a
+`done` row with the same inputs exists. Dependents include the upstream run id, so rerunning a step reruns
+what follows it.
+
+```
+uv run python -m server status             # what ran, what is pending
+uv run python -m server run [step ...]     # run pending steps without serving
+uv run python -m server reset harmonize    # delete its rows and those after it; next run redoes them
+```
+
+Settings (environment): `FIRMS_START`, `FIRMS_BBOX` (default `-25,-20,45,72`), `FIRMS_FAMILIES`,
+`FIRMS_RADIUS_KM`, `FIRMS_WINDOW_MIN`, `FIRMS_S2_MAX_EVENTS`, `PIPELINE_SKIP=fetch,sentinel2` to leave steps out
+(e.g. offline), `PIPELINE_ON_START=0` to serve without running anything, `FIRMS_DB` for the database path.
+
+### API
+
+`/api/meta`, `/api/pipeline`, `/api/points`, `/api/grid`, `/api/incidents`. The map asks for the current view
+(date range plus bounding box). `/api/points` returns binary columns; when a view holds more than
+`FIRMS_MAX_POINTS` (250k) detections the map gets per-cell counts from `/api/grid` instead.
 
 ### Independent European incidents
 
@@ -58,7 +83,7 @@ them would be circular.
   2024 or lag too far behind to cover 2024-2026. Portugal's ANEPC/fogos.pt feed had no stable documented
   API.
 
-`firms.build` tags each NASA detection with the incident it falls inside. The matching buffer and date
+The `tag` step tags each NASA detection with the incident it falls inside. The matching buffer and date
 slack depend on the source: EMS uses 1 km and 2 days, Sentinel-2 uses 0.3 km and an exact window from the
 pre to post scene. Buffers are in degrees, so longitude is slightly under-counted at high latitude.
 Unmatched detections are kept but marked unconfirmed.
@@ -71,15 +96,11 @@ splits ranges into 5-day windows.
 
 | Path | Contents |
 | --- | --- |
+| `data/firms.db` | SQLite: `detections`, `incidents`, `clusters`, `day_stats`, `pipeline_steps` |
 | `data/raw/<SOURCE>/<YYYYMMDD>_<days>.csv` | raw FIRMS responses (gitignored) |
 | `data/normalized/<SOURCE>/*.parquet` | one common schema per detection (`firms/config.py: SCHEMA`) |
-| `data/incidents/incidents.geojson` | independent incident polygons: EMS areas and confirmed Sentinel-2 scars (gitignored) |
+| `data/incidents/raw/` | cached EMS and per-event Sentinel-2 results, so runs resume |
 | `data/incidents/s2_verdicts.csv` | one row per checked fire event with its Sentinel-2 verdict |
-| `data/incidents/raw/s2/` | per-event Sentinel-2 results, cached so runs resume (gitignored) |
-| `data/analysis/harmonized.parquet` | all detections with `cluster_id`, `harmonized_status` and `incident_id` |
-| `data/analysis/clusters.csv` | one row per MODIS+VIIRS cluster |
-| `data/analysis/daily_summary.csv` | per UTC day: counts, FRP and matched share per sensor |
-| `web/public/data/` | `index.json`, `days/YYYY-MM-DD.json` (detections) and `incident-days/YYYY-MM-DD.json` (incidents) for the map (gitignored) |
 
 ## Harmonization notes
 

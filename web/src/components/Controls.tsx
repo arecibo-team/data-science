@@ -1,41 +1,43 @@
-import { type ConfFilter, type Filters, type LayerCounts, type LayerKey, type Mode, type StatusFilter } from "../model";
+import type { PipelineStep } from "../types";
+import { type ConfFilter, type Filters, type LayerCounts, type LayerKey, type StatusFilter } from "../model";
 
 interface Props {
   dates: string[];
   filters: Filters;
   onChange: (f: Filters) => void;
-  /** Counts within the selected date range, shown next to each layer. */
+  /** Counts in the loaded map view and date range, shown next to each layer. */
   counts: LayerCounts;
   /** Visible detections and how many are matched by both sensors. Null in grid view. */
   stats: { total: number; matched: number } | null;
-  /** Files finished so far while a new range loads; null when idle. */
-  progress: { done: number; total: number } | null;
+  /** True while the server is being asked for the current view. */
+  loading: boolean;
+  /** "grid" when the view holds too many detections to draw one by one. */
+  mode: "points" | "grid";
+  /** Pipeline steps while the server is still building data; null when idle. */
+  pipeline: PipelineStep[] | null;
 }
 
-export function Controls({ dates, filters, onChange, counts, stats, progress }: Props) {
+export function Controls({ dates, filters, onChange, counts, stats, loading, mode, pipeline }: Props) {
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch });
   const setLayer = (key: LayerKey, on: boolean) => set({ layers: { ...filters.layers, [key]: on } });
-  const grid = filters.view === "grid";
+  const grid = mode === "grid";
 
   // Any range is allowed. Keep it ordered by pulling the other end along if needed.
   const setFrom = (from: string) => set({ from, to: filters.to < from ? from : filters.to });
   const setTo = (to: string) => set({ to, from: filters.from > to ? to : filters.from });
-  const setView = (view: Mode) => set({ view });
 
   return (
     <div className="controls">
-      <fieldset>
-        <legend>View</legend>
-        <select value={filters.view} onChange={(e) => setView(e.target.value as Mode)}>
-          <option value="points">Points (single detections)</option>
-          <option value="grid">Grid (1° cell counts)</option>
-        </select>
-        <p className="muted small">
-          {grid
-            ? "Grid counts per cell. Fast for long ranges. Confidence and cross-sensor filters need the points view."
-            : "Every detection as a point. Long ranges take longer to draw."}
-        </p>
-      </fieldset>
+      {pipeline && (
+        <fieldset>
+          <legend>Server is updating</legend>
+          <ul className="steps small">
+            {pipeline.map((s) => (
+              <li key={s.step} className={`step-${s.state}`}>{s.title}: {s.state.replace("_", " ")}</li>
+            ))}
+          </ul>
+        </fieldset>
+      )}
 
       <fieldset>
         <legend>Date range (UTC)</legend>
@@ -51,16 +53,13 @@ export function Controls({ dates, filters, onChange, counts, stats, progress }: 
             {dates.map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
         </label>
-        {progress && (
-          <div className="loading" role="status">
-            <div className="progress" role="progressbar" aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.done}>
-              <div className="progress-bar" style={{ width: `${(progress.done / progress.total) * 100}%` }} />
-            </div>
-            <p className="muted small">
-              Loading {progress.done.toLocaleString()} / {progress.total.toLocaleString()} files…
-            </p>
-          </div>
-        )}
+        <p className="muted small" role="status">
+          {loading
+            ? "Loading from the server…"
+            : grid
+              ? "Too many detections in view to draw one by one. Showing counts per cell; zoom in or shorten the range for points."
+              : "Showing every detection in view."}
+        </p>
       </fieldset>
 
       <fieldset>
@@ -112,7 +111,7 @@ export function Controls({ dates, filters, onChange, counts, stats, progress }: 
         </select>
         <p className="muted small">
           {grid
-            ? "Available in the points view."
+            ? "Needs individual detections: zoom in or shorten the range."
             : "Nominal and high include detections at nominal or high confidence. Low only selects low."}
         </p>
       </fieldset>
@@ -131,7 +130,7 @@ export function Controls({ dates, filters, onChange, counts, stats, progress }: 
         <p className="muted small">
           {stats
             ? `${stats.matched.toLocaleString()} of ${stats.total.toLocaleString()} shown are matched by both sensors.`
-            : "Available in the points view."}
+            : "Needs individual detections: zoom in or shorten the range."}
         </p>
       </fieldset>
     </div>

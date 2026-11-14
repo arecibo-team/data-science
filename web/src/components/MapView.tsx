@@ -1,9 +1,9 @@
 import { useEffect } from "react";
-import { MapContainer, TileLayer, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import { CanvasPointLayer, SENSOR_COLOR } from "./PointLayer";
 import type { GridCell, VisibleSet } from "../model";
-import type { IncidentFeature } from "../types";
+import type { Bounds, IncidentFeature } from "../types";
 
 interface Props {
   /** Individual detections (short ranges). Null when the grid is shown instead. */
@@ -12,7 +12,8 @@ interface Props {
   cells: GridCell[] | null;
   incidents: IncidentFeature[];
   onPick: (i: number | null) => void;
-  fitKey: string;
+  /** Called with the visible bounds and zoom level on load and when the view settles. */
+  onView: (bounds: Bounds, zoom: number) => void;
 }
 
 const INCIDENT_STYLE = {
@@ -110,33 +111,22 @@ function GridOverlay({ cells }: Pick<Props, "cells">) {
   return null;
 }
 
-/** Zoom to the data whenever the loaded dataset changes. */
-function FitToData({ visible, cells, fitKey }: Pick<Props, "visible" | "cells" | "fitKey">) {
-  const map = useMap();
-  useEffect(() => {
-    let s = 90, n = -90, w = 180, e = -180;
-    const add = (lat: number, lon: number) => {
-      if (lat < s) s = lat;
-      if (lat > n) n = lat;
-      if (lon < w) w = lon;
-      if (lon > e) e = lon;
-    };
-    if (visible && visible.count > 0) {
-      for (let i = 0; i < visible.count; i++) add(visible.lat[i], visible.lon[i]);
-    } else if (cells && cells.length > 0) {
-      for (const c of cells) add(c.lat, c.lon);
-    } else {
-      return;
-    }
-    map.fitBounds(L.latLngBounds([s, w], [n, e]), { padding: [24, 24], maxZoom: 9 });
-    // Re-run only when the loaded dataset changes, not on every filter toggle.
-  }, [map, fitKey]);
+/** Report the visible bounds and zoom on load and after every pan or zoom. */
+function ViewReporter({ onView }: Pick<Props, "onView">) {
+  const map = useMapEvents({
+    moveend: () => report(),
+  });
+  const report = () => {
+    const b = map.getBounds();
+    onView({ west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() }, map.getZoom());
+  };
+  useEffect(report, [map]); // eslint-disable-line react-hooks/exhaustive-deps
   return null;
 }
 
 export function MapView(props: Props) {
   return (
-    <MapContainer center={[0, 20]} zoom={3} preferCanvas className="map" worldCopyJump>
+    <MapContainer center={[46, 12]} zoom={5} preferCanvas className="map" worldCopyJump>
       <TileLayer
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -144,7 +134,7 @@ export function MapView(props: Props) {
       <IncidentsOverlay incidents={props.incidents} />
       <PointsOverlay visible={props.visible} onPick={props.onPick} />
       <GridOverlay cells={props.cells} />
-      <FitToData visible={props.visible} cells={props.cells} fitKey={props.fitKey} />
+      <ViewReporter onView={props.onView} />
     </MapContainer>
   );
 }

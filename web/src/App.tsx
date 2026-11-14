@@ -1,152 +1,204 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { loadGrid, loadIncidents, loadIndex, loadMonth, mapLimit, pointAt, pruneCaches } from "./data";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { loadGrid, loadIncidents, loadMeta, loadPipeline, loadPoints, pointAt, type Query } from "./data";
 import { MapView } from "./components/MapView";
 import { Controls } from "./components/Controls";
 import { SENSOR_COLOR } from "./components/PointLayer";
-import { aggregateGrid, scanMonths, type Filters, type LayerCounts, type Mode } from "./model";
-import type { GridMonth, Index, IncidentFeature, IncidentProperties, MonthData, Point } from "./types";
+import { aggregateGrid, scanPoints, type Filters, type LayerCounts } from "./model";
+import type { Bounds, GridData, IncidentFeature, IncidentProperties, Meta, PipelineStep, Point, PointsData } from "./types";
 
 const NO_COUNTS: LayerCounts = { MODIS: 0, VIIRS: 0, COMMON: 0, INCIDENTS: 0 };
+const PAD = 0.25; // fetch this much beyond the view on each side, so small pans need no request
+const DEBOUNCE_MS = 250;
+
+/** What the loaded data covers. Pans inside `bounds` do not trigger a request. */
+interface Loaded {
+  from: string;
+  to: string;
+  bounds: Bounds;
+  zoom: number;
+  version: number;
+}
+
+const inside = (v: Bounds, b: Bounds) => v.west >= b.west && v.east <= b.east && v.south >= b.south && v.north <= b.north;
+const area = (b: Bounds) => (b.east - b.west) * (b.north - b.south);
+
+function pad(b: Bounds): Bounds {
+  const dx = (b.east - b.west) * PAD;
+  const dy = (b.north - b.south) * PAD;
+  return {
+    west: Math.max(-180, b.west - dx),
+    east: Math.min(180, b.east + dx),
+    south: Math.max(-90, b.south - dy),
+    north: Math.min(90, b.north + dy),
+  };
+}
+
+/** Grid cell size for a zoom level: about one cell per 40 px, from the sizes the server offers. */
+function cellFor(zoom: number, cells: number[]): number {
+  const want = 360 / (256 * 2 ** zoom) * 40;
+  return cells.find((c) => c >= want) ?? cells[cells.length - 1];
+}
 
 export default function App() {
-  const [index, setIndex] = useState<Index | null>(null);
+  const [meta, setMeta] = useState<Meta | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters | null>(null);
-  const [months, setMonths] = useState<MonthData[]>([]);
-  const [grids, setGrids] = useState<GridMonth[]>([]);
+  const [points, setPoints] = useState<PointsData | null>(null);
+  const [grid, setGrid] = useState<GridData | null>(null);
   const [incidents, setIncidents] = useState<IncidentFeature[]>([]);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [dataVersion, setDataVersion] = useState(0);
+  const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Point | null>(null);
+  const [view, setView] = useState<{ bounds: Bounds; zoom: number } | null>(null);
+  const [steps, setSteps] = useState<PipelineStep[]>([]);
+  // Bumped when the pipeline finishes a pass, so the map asks the server again.
+  const [dataVersion, setDataVersion] = useState(0);
+  const loaded = useRef<Loaded | null>(null);
 
-  const dates = useMemo(() => (index ? Object.keys(index.days).sort() : []), [index]);
+  const dates = useMemo(() => (meta ? Object.keys(meta.days).sort() : []), [meta]);
   const from = filters?.from ?? "";
   const to = filters?.to ?? "";
-  const mode: Mode = filters?.view ?? "points";
 
-  // Startup: index, then the European incidents (loaded once for the whole archive).
+  const refreshMeta = useCallback(
+    () =>
+      loadMeta()
+        .then((m) => {
+          setMeta(m);
+          const all = Object.keys(m.days).sort();
+          // Start on the latest three days, which is the part people open the map for.
+          if (all.length) {
+            setFilters((f) => f ?? {
+              from: all[Math.max(0, all.length - 3)],
+              to: all[all.length - 1],
+              layers: { MODIS: true, VIIRS: true, COMMON: true, INCIDENTS: true },
+              confidence: "all",
+              status: "all",
+            });
+          }
+          return m;
+        })
+        .catch((e: Error) => {
+          setError(e.message);
+          return null;
+        }),
+    [],
+  );
+
   useEffect(() => {
-    loadIndex()
-      .then((idx) => {
-        setIndex(idx);
-        const all = Object.keys(idx.days).sort();
-        if (all.length === 0) return;
-        setFilters({
-          from: all[0],
-          to: all[Math.min(2, all.length - 1)],
-          view: "points",
-          layers: { MODIS: true, VIIRS: true, COMMON: true, INCIDENTS: true },
-          confidence: "all",
-          status: "all",
-        });
-      })
-      .catch((e: Error) => setError(e.message));
-  }, []);
+    refreshMeta();
+  }, [refreshMeta]);
 
+  // While the server runs its startup pipeline, poll it. When it finishes, reload everything.
+  const running = meta?.pipeline_running ?? false;
   useEffect(() => {
-    if (!index) return;
-    loadIncidents(index.incidents.file)
-      .then(setIncidents)
-      .catch((e: Error) => setError(`Incidents: ${e.message}`));
-  }, [index]);
+    if (!running) return;
+    const timer = setInterval(() => {
+      loadPipeline()
+        .then((p) => {
+          setSteps(p.steps);
+          if (!p.running) {
+            refreshMeta().then(() => setDataVersion((v) => v + 1));
+          }
+        })
+        .catch(() => undefined);
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [running, refreshMeta]);
 
-  // Load the months (or per-month grids) that overlap the range. Layer toggles do not reload.
+  // Ask the server for what is in view. Debounced; a pan inside the loaded box asks for nothing.
   useEffect(() => {
-    if (!index || !from) return;
-    const infos = Object.entries(index.months)
-      .filter(([, info]) => info.days.some((d) => d >= from && d <= to))
-      .sort(([a], [b]) => a.localeCompare(b));
-    let cancelled = false;
-    let done = 0;
-    const total = infos.length;
-    setError(null);
-    setProgress(total ? { done: 0, total } : null);
-    const tick = () => {
-      done++;
-      if (!cancelled) setProgress({ done, total });
-    };
+    if (!meta || !filters || !view) return;
+    const prev = loaded.current;
+    const sameRange = prev && prev.from === from && prev.to === to && prev.version === dataVersion;
+    const cell = cellFor(view.zoom, meta.grid_cells);
+    const haveGrid = grid !== null && points === null;
+    const stillGood =
+      sameRange && inside(view.bounds, prev.bounds) &&
+      (haveGrid ? prev.zoom === view.zoom && area(view.bounds) > area(prev.bounds) / 9 : true);
+    if (stillGood) {
+      setLoading(false); // an earlier in-flight request was cancelled by this effect's cleanup
+      return;
+    }
 
-    const load = async () => {
-      if (mode === "grid") {
-        const gs = await mapLimit(infos, 4, async ([m, info]) => {
-          const g = await loadGrid(m, info.grid);
-          tick();
-          return g;
-        });
-        if (cancelled) return;
-        setGrids(gs);
-        setMonths([]);
-      } else {
-        const ms = await mapLimit(infos, 4, async ([m, info]) => {
-          const d = await loadMonth(m, info.file);
-          tick();
-          return d;
-        });
-        if (cancelled) return;
-        setMonths(ms);
-        setGrids([]);
+    const ctl = new AbortController();
+    const timer = setTimeout(async () => {
+      const bounds = pad(view.bounds);
+      const q: Query = { from, to, ...bounds };
+      setLoading(true);
+      setError(null);
+      try {
+        const [pts, inc] = await Promise.all([loadPoints(q, ctl.signal), loadIncidents(q, ctl.signal)]);
+        const g = pts.overflow ? await loadGrid(q, cell, ctl.signal) : null;
+        if (ctl.signal.aborted) return;
+        setPoints(pts.overflow ? null : pts);
+        setGrid(g);
+        setIncidents(inc);
+        setSelected(null);
+        loaded.current = { from, to, bounds, zoom: view.zoom, version: dataVersion };
+      } catch (e) {
+        if (!ctl.signal.aborted) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!ctl.signal.aborted) setLoading(false);
       }
-      pruneCaches(new Set(infos.map(([m]) => m)));
-      setDataVersion((v) => v + 1);
-    };
-
-    load()
-      .catch((e: Error) => !cancelled && setError(e.message))
-      .finally(() => !cancelled && setProgress(null));
+    }, DEBOUNCE_MS);
     return () => {
-      cancelled = true;
+      clearTimeout(timer);
+      ctl.abort();
     };
-  }, [index, from, to, mode]);
+    // `grid` and `points` only decide whether a refetch is needed; they must not trigger one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meta, from, to, view, dataVersion]);
 
-  const enums = index?.enums;
+  const enums = meta?.enums;
 
-  // Points mode: one pass over the loaded months with all filters applied.
+  // Points: one pass over the response with all filters applied.
   const scan = useMemo(
-    () => (filters && enums && mode === "points" ? scanMonths(months, enums, filters) : null),
-    [filters, enums, months, mode],
+    () => (filters && enums && points ? scanPoints(points, enums, filters) : null),
+    [filters, enums, points],
   );
 
-  // Grid mode: per-cell counts over the range, with the layer toggles applied.
-  const agg = useMemo(
-    () => (filters && index && mode === "grid" ? aggregateGrid(grids, index.grid_cell_deg, filters) : null),
-    [filters, index, grids, mode],
-  );
-
-  // Incidents overlapping the selected range.
-  const rangeIncidents = useMemo(
-    () => incidents.filter((f) => f.properties.start_date <= to && f.properties.end_date >= from),
-    [incidents, from, to],
-  );
+  // Grid: the server's per-cell counts with the layer toggles applied.
+  const agg = useMemo(() => (filters && grid ? aggregateGrid(grid, filters) : null), [filters, grid]);
 
   const counts: LayerCounts = useMemo(
-    () => ({ ...(scan?.counts ?? agg?.counts ?? NO_COUNTS), INCIDENTS: rangeIncidents.length }),
-    [scan, agg, rangeIncidents],
+    () => ({ ...(scan?.counts ?? agg?.counts ?? NO_COUNTS), INCIDENTS: incidents.length }),
+    [scan, agg, incidents],
   );
 
   const stats = scan ? { total: scan.total, matched: scan.matched } : null;
-  const showIncidents = filters?.layers.INCIDENTS ? rangeIncidents : [];
+  const showIncidents = filters?.layers.INCIDENTS ? incidents : [];
 
   const incidentById = useMemo(
     () => new Map(incidents.map((f) => [f.properties.incident_id, f.properties])),
     [incidents],
   );
 
+  const onView = useCallback((bounds: Bounds, zoom: number) => setView({ bounds, zoom }), []);
+
   const onPick = useCallback(
     (i: number | null) => {
-      if (i === null || !scan || !enums) {
+      if (i === null || !scan || !enums || !points) {
         setSelected(null);
         return;
       }
-      setSelected(pointAt(months[scan.visible.chunk[i]], scan.visible.row[i], enums));
+      setSelected(pointAt(points, scan.visible.row[i], enums));
     },
-    [scan, months, enums],
+    [scan, points, enums],
   );
 
-  if (error && !filters) {
+  if (error && !meta) {
     return <main className="page"><h1>FIRMS hotspots</h1><p className="error">{error}</p></main>;
   }
-  if (!filters || !index) {
-    return <main className="page"><h1>FIRMS hotspots</h1><p>Loading index…</p></main>;
+  if (!meta) {
+    return <main className="page"><h1>FIRMS hotspots</h1><p>Connecting to the server…</p></main>;
+  }
+  if (!filters) {
+    return (
+      <main className="page">
+        <h1>FIRMS hotspots</h1>
+        <p>{meta.pipeline_running ? "The server is building the database. This page updates when it is ready." : "No detections yet. Run the pipeline: python -m server run"}</p>
+        <PipelineList steps={steps} />
+      </main>
+    );
   }
 
   return (
@@ -154,7 +206,7 @@ export default function App() {
       <aside className="sidebar">
         <h1>FIRMS hotspots</h1>
         <p className="muted small">
-          MODIS (Terra/Aqua) and VIIRS (SNPP/NOAA-20/NOAA-21) active fires. Generated {index.generated_utc}.
+          MODIS (Terra/Aqua) and VIIRS (SNPP/NOAA-20/NOAA-21) active fires. Data updated {meta.generated_utc ?? "never"}.
         </p>
         <Controls
           dates={dates}
@@ -162,7 +214,9 @@ export default function App() {
           onChange={setFilters}
           counts={counts}
           stats={stats}
-          progress={progress}
+          loading={loading}
+          mode={grid ? "grid" : "points"}
+          pipeline={running ? steps : null}
         />
         {error && <p className="error">{error}</p>}
 
@@ -203,7 +257,7 @@ export default function App() {
           cells={agg?.cells ?? null}
           incidents={showIncidents}
           onPick={onPick}
-          fitKey={`${from}|${to}|${dataVersion}`}
+          onView={onView}
         />
       </main>
     </div>
@@ -222,5 +276,16 @@ function IncidentInfo({ p, id }: { p: IncidentProperties | undefined; id: string
         {p.area_ha !== null ? ` · ${Math.round(p.area_ha).toLocaleString()} ha` : ""}
       </span>
     </>
+  );
+}
+
+function PipelineList({ steps }: { steps: PipelineStep[] }) {
+  if (!steps.length) return null;
+  return (
+    <ul className="muted small">
+      {steps.map((s) => (
+        <li key={s.step}>{s.title}: {s.state.replace("_", " ")}</li>
+      ))}
+    </ul>
   );
 }

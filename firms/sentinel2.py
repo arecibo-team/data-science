@@ -371,9 +371,11 @@ def write_verdicts(records: list[dict]) -> pd.DataFrame:
 
 # ---------------------------------------------------------------- orchestration
 
-def run(max_events: int, workers: int) -> pd.DataFrame:
-    h = pd.read_parquet(C.ANALYSIS_DIR / "harmonized.parquet", columns=[
-        "lat", "lon", "acq_time_utc", "frp_mw"])
+def run(max_events: int, workers: int, h: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Check the largest fire events. `h` holds lat, lon, acq_time_utc and frp_mw of all detections."""
+    if h is None:
+        h = pd.read_parquet(C.ANALYSIS_DIR / "harmonized.parquet", columns=[
+            "lat", "lon", "acq_time_utc", "frp_mw"])
     events, labels = find_events(h)
     lon_min, lat_min, lon_max, lat_max = C.EUROPE_BBOX
     in_europe = events["first_lon"].between(lon_min, lon_max) & events["first_lat"].between(lat_min, lat_max)

@@ -80,3 +80,6 @@ dd { margin: 0; }
   border-radius: 2px;
   vertical-align: middle;
 }
+
+.steps { margin: 0; padding-left: 16px; }
+.step-failed { color: var(--error); }
