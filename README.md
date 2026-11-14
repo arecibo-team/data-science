@@ -23,9 +23,10 @@ analysis and a simple React map.
 ## Running
 
 ```
-cd web && bun run build && cd ..   # once, and after web changes
-uv run python -m server            # http://127.0.0.1:8000
+./start.sh                        # installs, builds the web app if needed, serves http://127.0.0.1:8000
 ```
+
+Or by hand: `cd web && bun run build`, then `uv run python -m server`.
 
 The Python server (FastAPI + SQLite, `data/firms.db`) runs every pipeline step on start in a background
 thread and serves the map and its API meanwhile. For web development run `bun run dev` in `web/`;
