@@ -243,10 +243,10 @@ def test_export_confirmed_detection_gets_incident_code(tmp_path):
     df["uid"] = "a"
     df["firms_version"] = "x"
     df["source"] = "s"
-    df["incident_id"] = "effis-42"
+    df["incident_id"] = "S2-42"
     export_web(df, out_dir=tmp_path)
     header, cols = _decode_month(tmp_path / "months" / "2025-08.bin.gz")
-    assert header["incidents"] == ["effis-42"]
+    assert header["incidents"] == ["S2-42"]
     assert cols["incident"].tolist() == [1]  # 1-based position in the month's table
     assert not (tmp_path / "days").exists() and not (tmp_path / "incident-days").exists()
 

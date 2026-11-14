@@ -1,9 +1,10 @@
-"""Tag NASA detections with the real European incident they fall inside.
+"""Tag NASA detections with the independent incident they fall inside.
 
-A detection is "confirmed" when it lies within `buffer_km` of an incident polygon
-(EFFIS perimeter or Copernicus EMS AOI) and its acquisition date is within the
-incident's [start_date, end_date] window widened by `slack_days`. When several
-incidents qualify, the one whose date window is closest wins.
+A detection is "confirmed" when it lies within the feature's `buffer_km` of an incident
+polygon (Copernicus EMS AOI or Sentinel-2 burn scar) and its acquisition date is within
+the feature's [start_date, end_date] window widened by its `slack_days`. Features may set
+`buffer_km` and `slack_days` in their properties; otherwise the config defaults apply.
+When several incidents qualify, the one whose date window is closest wins.
 
 The buffer is applied in degrees (1 deg ~ 111 km). Longitude is not scaled by cos(lat),
 so the east-west tolerance shrinks to roughly 0.6 km at 55 N; this is a deliberate
@@ -12,7 +13,6 @@ simplification that keeps matching a pure shapely operation.
 from __future__ import annotations
 
 import logging
-from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -32,7 +32,10 @@ def tag_incidents(
     buffer_km: float = C.MATCH_BUFFER_KM,
     slack_days: int = C.MATCH_DATE_SLACK_DAYS,
 ) -> pd.Series:
-    """Return a Series (aligned with `h`) of incident_id strings, or None when unmatched."""
+    """Return a Series (aligned with `h`) of incident_id strings, or None when unmatched.
+
+    `buffer_km` and `slack_days` are defaults for features that do not set their own.
+    """
     result = pd.Series([None] * len(h), index=h.index, dtype=object)
     if not features or h.empty:
         return result
@@ -40,14 +43,16 @@ def tag_incidents(
     geoms = []
     starts = np.empty(len(features), dtype="datetime64[D]")
     ends = np.empty(len(features), dtype="datetime64[D]")
+    slacks = np.empty(len(features), dtype="timedelta64[D]")
     ids = []
-    deg = buffer_km / 111.0
     for i, f in enumerate(features):
         p = f["properties"]
-        # Some EFFIS perimeters are self-intersecting; repair before buffering.
+        deg = p.get("buffer_km", buffer_km) / 111.0
+        # Repair invalid polygons (self-intersections) before buffering.
         geoms.append(make_valid(shape(f["geometry"])).buffer(deg))
         starts[i] = np.datetime64(p["start_date"])
         ends[i] = np.datetime64(p["end_date"])
+        slacks[i] = np.timedelta64(int(p.get("slack_days", slack_days)), "D")
         ids.append(p["incident_id"])
 
     tree = STRtree(geoms)
@@ -58,7 +63,7 @@ def tag_incidents(
 
     det_day = h["acq_time_utc"].dt.tz_localize(None).dt.normalize().to_numpy(dtype="datetime64[D]")
     d = det_day[point_idx]
-    slack = np.timedelta64(slack_days, "D")
+    slack = slacks[geom_idx]
     s = starts[geom_idx]
     e = ends[geom_idx]
     # Days outside the incident window (0 when inside). Keep only detections within slack.

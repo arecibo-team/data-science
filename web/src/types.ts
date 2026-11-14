@@ -21,10 +21,10 @@ export interface Point {
   incident: string | null;
 }
 
-/** Properties of one European incident polygon (EFFIS perimeter or Copernicus EMS AOI). */
+/** Properties of one independent incident polygon (Copernicus EMS AOI or Sentinel-2 burn scar). */
 export interface IncidentProperties {
   incident_id: string;
-  source: "EFFIS" | "Copernicus EMS";
+  source: "Copernicus EMS" | "Sentinel-2";
   name: string;
   country: string;
   start_date: string;

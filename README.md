@@ -26,8 +26,9 @@ analysis and a simple React map.
 # 1. download raw CSVs (resumable; existing files are skipped)
 uv run python -m firms.fetch --start 2025-08-01 --end 2025-08-31 --bbox 15,-20,35,-5
 
-# 2. European incidents (EFFIS perimeters + Copernicus EMS wildfire areas)
-uv run python -m firms.incidents                   # resumable; refreshes the current season
+# 2. independent European incidents
+uv run python -m firms.incidents                   # Copernicus EMS areas + confirmed Sentinel-2 scars
+uv run python -m firms.sentinel2 --max-events 300  # optional, slow: Sentinel-2 burn-scar check (resumable)
 
 # 3. normalize -> harmonize -> incident match -> analysis tables -> web export
 uv run python -m firms.build                       # 1 km, 180 min match window
@@ -37,22 +38,30 @@ uv run python -m firms.build --radius-km 0.75 --window-min 120
 cd web && bun run dev         # or: bun run build && bun run preview
 ```
 
-### European incidents
+### Independent European incidents
 
-`firms.incidents` harvests real fire incidents in Europe:
+NASA detections are only checked against sources that do not use MODIS or VIIRS data. EFFIS
+burnt areas were dropped because they are derived from those same sensors, so matching against
+them would be circular.
 
-- **EFFIS** burnt-area perimeters (JRC/Copernicus WFS, layers `ms:modis.ba.poly.<year>` and `ms:modis.ba.poly.season`).
-  Only fires of about 30 ha or more are mapped. Countries are restricted to Europe (`firms/config.py: EUROPE_COUNTRIES`);
-  Turkey and Russia are excluded.
 - **Copernicus EMS** rapid-mapping wildfire activations (`category=fire`), using the AOI extents from the
-  dashboard API. Activations with a non-European continent are dropped. Some non-rapid `EMSN` activations
-  return 403 and are skipped.
-- **National reports**: not included. No stable machine-readable download was available.
+  dashboard API. These are event-level mapped regions made from separate imagery, not burn perimeters.
+  Activations outside Europe are dropped. Some non-rapid `EMSN` activations return 403 and are skipped.
+- **Sentinel-2 burn scars** (`firms/sentinel2.py`), computed here. Detections are linked into fire events
+  (within 2 km and 2 days). For each event, a clear Sentinel-2 L2A scene before the first detection and one
+  after the last are taken from Microsoft Planetary Computer. Burn severity is dNBR = NBR(pre) - NBR(post),
+  NBR = (B8A - B12) / (B8A + B12), with a 0.27 threshold on clear land. A scar counts when it is at least
+  5 ha and within 1 km of a detection. Each event gets a verdict (`confirmed`, `not_confirmed`,
+  `unverifiable`, `too_large`) in `data/incidents/s2_verdicts.csv`. Only confirmed scars become incidents.
+  Scars confirm burning days to weeks after the fact, so `not_confirmed` does not prove a false alarm.
+- **Checked and rejected**: EGIF (Spain), the JRC EFFIS fire database and BDIFF (France) either stop before
+  2024 or lag too far behind to cover 2024-2026. Portugal's ANEPC/fogos.pt feed had no stable documented
+  API.
 
-`firms.build` tags each NASA detection with the incident it falls inside: within 1 km of a perimeter (the
-buffer is in degrees, so longitude is slightly under-counted at high latitude) and dated within two days of
-the incident's start and end. Unmatched detections are kept but marked unconfirmed. The map's
-"Only confirmed European incidents" filter hides them.
+`firms.build` tags each NASA detection with the incident it falls inside. The matching buffer and date
+slack depend on the source: EMS uses 1 km and 2 days, Sentinel-2 uses 0.3 km and an exact window from the
+pre to post scene. Buffers are in degrees, so longitude is slightly under-counted at high latitude.
+Unmatched detections are kept but marked unconfirmed.
 
 `--bbox` takes `W,S,E,N` or `world`. Standard-processing (`_SP`) archives are used where available,
 and NRT for the most recent days. The FIRMS API accepts at most 5 days per request, so the fetcher
@@ -64,7 +73,9 @@ splits ranges into 5-day windows.
 | --- | --- |
 | `data/raw/<SOURCE>/<YYYYMMDD>_<days>.csv` | raw FIRMS responses (gitignored) |
 | `data/normalized/<SOURCE>/*.parquet` | one common schema per detection (`firms/config.py: SCHEMA`) |
-| `data/incidents/incidents.geojson` | European incident polygons from EFFIS and EMS (gitignored) |
+| `data/incidents/incidents.geojson` | independent incident polygons: EMS areas and confirmed Sentinel-2 scars (gitignored) |
+| `data/incidents/s2_verdicts.csv` | one row per checked fire event with its Sentinel-2 verdict |
+| `data/incidents/raw/s2/` | per-event Sentinel-2 results, cached so runs resume (gitignored) |
 | `data/analysis/harmonized.parquet` | all detections with `cluster_id`, `harmonized_status` and `incident_id` |
 | `data/analysis/clusters.csv` | one row per MODIS+VIIRS cluster |
 | `data/analysis/daily_summary.csv` | per UTC day: counts, FRP and matched share per sensor |

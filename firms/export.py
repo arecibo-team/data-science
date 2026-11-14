@@ -224,11 +224,19 @@ def export_web(h: pd.DataFrame, incidents: list[dict] | None = None, out_dir=C.W
 
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.parse_args(argv)
+    p.add_argument("--retag", action="store_true",
+                   help="re-tag detections with the current incidents first (skips normalize and match)")
+    args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     from .incidents import load_incidents
+    from .match import tag_incidents
     h = pd.read_parquet(C.ANALYSIS_DIR / "harmonized.parquet")
-    export_web(h, load_incidents())
+    incidents = load_incidents()
+    if args.retag:
+        h["incident_id"] = tag_incidents(h, incidents)
+        h.to_parquet(C.ANALYSIS_DIR / "harmonized.parquet", index=False)
+        logging.getLogger("firms.export").info("re-tagged %d detections", int(h["incident_id"].notna().sum()))
+    export_web(h, incidents)
 
 
 if __name__ == "__main__":

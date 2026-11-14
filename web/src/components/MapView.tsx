@@ -16,8 +16,8 @@ interface Props {
 }
 
 const INCIDENT_STYLE = {
-  EFFIS: { color: "#dc2626", fillColor: "#dc2626" }, // red: EFFIS burnt-area perimeters
   "Copernicus EMS": { color: "#7c3aed", fillColor: "#7c3aed" }, // violet: EMS mapping areas
+  "Sentinel-2": { color: "#dc2626", fillColor: "#dc2626" }, // red: Sentinel-2 burn scars (dNBR)
 } as const;
 
 const CONFIRMED_RING = "#dc2626";
@@ -28,7 +28,7 @@ function IncidentsOverlay({ incidents }: Pick<Props, "incidents">) {
   useEffect(() => {
     const layer = L.geoJSON(incidents as unknown as Parameters<typeof L.geoJSON>[0], {
       style: (f) => {
-        const src = (f?.properties?.source ?? "EFFIS") as keyof typeof INCIDENT_STYLE;
+        const src = (f?.properties?.source ?? "Copernicus EMS") as keyof typeof INCIDENT_STYLE;
         return { ...INCIDENT_STYLE[src], weight: 1.5, fillOpacity: 0.15 };
       },
       onEachFeature: (f, l) => {

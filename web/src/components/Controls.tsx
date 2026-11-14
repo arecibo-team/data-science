@@ -93,7 +93,8 @@ export function Controls({ dates, filters, onChange, counts, stats, progress }: 
           <span className="muted"> {counts.INCIDENTS.toLocaleString()}</span>
         </label>
         <p className="muted small">
-          EFFIS burnt-area perimeters (30 ha or larger) and Copernicus EMS wildfire mapping areas.
+          Independent checks only, none derived from NASA data: Copernicus EMS wildfire mapping areas
+          and Sentinel-2 burn scars (dNBR) from Planetary Computer.
         </p>
       </fieldset>
 

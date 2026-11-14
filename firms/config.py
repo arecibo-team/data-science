@@ -14,27 +14,46 @@ ANALYSIS_DIR = DATA_DIR / "analysis"
 WEB_DATA_DIR = ROOT / "web" / "public" / "data"
 INCIDENTS_DIR = DATA_DIR / "incidents"
 
-# Ground-truth incident sources (European fires only).
-EFFIS_WFS = "https://maps.effis.emergency.copernicus.eu/effis"
+# Independent ground truth. Nothing here is derived from FIRMS/MODIS/VIIRS: EFFIS burnt
+# areas are MODIS/VIIRS-based and were removed for that reason.
 EMS_ACTIVATIONS = "https://mapping.emergency.copernicus.eu/activations/api/activations/"
 EMS_DASHBOARD = "https://rapidmapping.emergency.copernicus.eu/backend/dashboard-api/public-activations/"
 # Earliest date we harvest incidents for; matches the start of the FIRMS archive we use.
 INCIDENTS_FROM = "2024-01-01"
-
-# Country codes as used by EFFIS (EL = Greece, UK = United Kingdom) and EMS names.
-# Turkey and Russia are excluded: only partly European and dominated by non-European fires.
-EUROPE_COUNTRIES = {
-    "AL", "AD", "AT", "BY", "BE", "BA", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE",
-    "EL", "GR", "HU", "IS", "IE", "IT", "XK", "LV", "LI", "LT", "LU", "MT", "MD", "MC", "ME",
-    "NL", "MK", "NO", "PL", "PT", "RO", "SM", "RS", "SK", "SI", "ES", "SE", "CH", "UA", "GB",
-    "UK", "VA",
-}
 # Rough Europe bounding box (lon_min, lat_min, lon_max, lat_max) used to reject
-# non-European EMS activations and stray EFFIS polygons.
+# non-European EMS activations.
 EUROPE_BBOX = (-25.0, 34.0, 45.0, 72.0)
 
-# Matching: a NASA detection is "confirmed" when it lies within this distance of an
-# incident polygon and its acquisition date is within the incident's dates +/- slack.
+# Sentinel-2 burn scars, computed here from Microsoft Planetary Computer STAC (open data).
+STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
+# Fire events: NASA detections linked within S2_LINK_KM and S2_LINK_DAYS (connected components).
+S2_LINK_KM = 2.0
+S2_LINK_DAYS = 2
+S2_MIN_DETECTIONS = 10
+# Events whose bounding box exceeds this span are too large for a single scene check.
+S2_MAX_SPAN_KM = 50.0
+# Chaining can link a whole season of persistent sources (industrial flares, volcanoes) into
+# one event; events lasting longer than this are not a single fire and are skipped.
+S2_MAX_DAYS = 21
+S2_PAD_KM = 1.0
+# Search windows: pre-fire scene before the first detection, post-fire scene after the last.
+S2_PRE_DAYS = 30
+S2_POST_DAYS = 45
+S2_POST_OFFSET_DAYS = 2
+S2_CLOUD_MAX = 40          # scene-level eo:cloud_cover upper bound, percent
+S2_MAX_CANDIDATES = 4      # scenes loaded per side, lowest cloud cover first
+S2_MIN_CLEAR = 0.5         # share of the event box that must be usable land in a scene
+S2_RESOLUTION = 20         # metres; B8A, B12 and SCL are all native at 20 m
+# Burn scar rules: dNBR threshold (~0.27 is the low-severity boundary used by USGS),
+# minimum total scar area, and how close a scar must be to a NASA detection to count.
+S2_DNBR = 0.27
+S2_MIN_SCAR_HA = 5.0
+S2_NEAR_KM = 1.0
+# Matching of NASA detections to a Sentinel-2 scar: tight, with an exact date window.
+S2_MATCH_BUFFER_KM = 0.3
+
+# Matching of NASA detections to EMS AOIs: a detection is "confirmed" when it lies within
+# this distance of an AOI and its date is within the AOI's dates +/- slack.
 MATCH_BUFFER_KM = 1.0
 MATCH_DATE_SLACK_DAYS = 2
 

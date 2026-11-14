@@ -170,7 +170,7 @@ export default function App() {
           <span><span className="dot dot-modis" /> MODIS</span>
           <span><span className="dot dot-viirs" /> VIIRS</span>
           <span><span className="dot dot-common" /> COMMON: confirmed inside an EU incident</span>
-          <span><span className="swatch" /> EU Incidents (EFFIS / EMS)</span>
+          <span><span className="swatch" /> EU Incidents (EMS / Sentinel-2)</span>
           <span className="muted small">Marker size grows with fire radiative power (FRP).</span>
         </div>
 
