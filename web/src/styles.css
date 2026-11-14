@@ -1,0 +1,67 @@
+:root {
+  --bg: #f7f7f5;
+  --panel: #ffffff;
+  --text: #1c1c1e;
+  --muted: #6b6b70;
+  --border: #e2e2df;
+  --error: #b42318;
+  --modis: #f97316;
+  --viirs: #2563eb;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161618;
+    --panel: #1f1f22;
+    --text: #ececef;
+    --muted: #9a9aa2;
+    --border: #34343a;
+    --error: #ff8a80;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161618;
+  --panel: #1f1f22;
+  --text: #ececef;
+  --muted: #9a9aa2;
+  --border: #34343a;
+  --error: #ff8a80;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+
+.app { display: grid; grid-template-columns: 320px 1fr; height: 100vh; }
+.sidebar { background: var(--panel); border-right: 1px solid var(--border); padding: 16px; overflow-y: auto; }
+.map-wrap { position: relative; min-width: 0; }
+.map { height: 100%; width: 100%; }
+.page { padding: 16px; }
+
+h1 { font-size: 18px; margin: 0 0 4px; }
+h2 { font-size: 14px; margin: 16px 0 8px; }
+fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 12px 0; padding: 8px 12px; }
+legend { padding: 0 4px; color: var(--muted); font-size: 12px; }
+label { display: block; margin: 4px 0; }
+label.check { display: flex; align-items: center; gap: 6px; }
+select { width: 100%; margin-top: 2px; padding: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; }
+input[type="checkbox"] { margin: 0; }
+
+.muted { color: var(--muted); }
+.small { font-size: 12px; margin: 4px 0 0; }
+.error { color: var(--error); }
+
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.dot-modis { background: var(--modis); }
+.dot-viirs { background: var(--viirs); }
+.legend { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+
+dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
+dt { color: var(--muted); }
+dd { margin: 0; }
+
+.leaflet-container { background: #dfe5ea; }
+@media (max-width: 760px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto 60vh; height: auto; }
+  .sidebar { border-right: none; border-bottom: 1px solid var(--border); overflow: visible; }
+}
