@@ -4,6 +4,7 @@
     GET /api/pipeline    the pipeline step ledger
     GET /api/points      detections in a date range and bounding box, as binary columns
     GET /api/tiles/z/x/y.png   heat tiles, for views with too many points (cached per zoom level)
+    GET /api/tiles/status      progress of the background tile generation
     GET /api/counts      totals for a range and box, for the heat overview
     GET /api/incidents   incident polygons overlapping a date range and bounding box
 
@@ -28,7 +29,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import db, pipeline, settings, tiles
+from . import db, pipeline, settings, tilegen, tiles
 
 log = logging.getLogger("server")
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -68,7 +69,10 @@ async def lifespan(_: FastAPI):
     db.init_db()
     if settings.RUN_ON_START:
         start_pipeline()
+    if settings.TILE_BG:
+        tilegen.service.start()
     yield
+    tilegen.service.stop()
 
 
 app = FastAPI(title="FIRMS hotspots", lifespan=lifespan)
@@ -190,6 +194,14 @@ def api_points(q: Query_ = Depends(_params)):
     finally:
         con.close()
     return Response(_encode_points(df, total, False), media_type="application/octet-stream")
+
+
+@app.get("/api/tiles/status")
+def api_tiles_status():
+    """Progress of the background tile generation. Tiles can be requested at any time regardless."""
+    if not settings.TILE_BG:
+        return {"enabled": False, "state": "off"}
+    return tilegen.service.status()
 
 
 @app.get("/api/tiles/{z}/{x}/{y}.png")

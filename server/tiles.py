@@ -10,9 +10,9 @@ Where the counts come from, by zoom level (LOD):
 
 Rendering draws onto a canvas padded by PAD px and crops, so blurred spots do not break at tile edges.
 
-Cache: PNGs under TILE_DIR/<data version>/<from>_<to>/<mask>/<z>/<x>/<y>.png. The data version is the id of
-the last finished `stats` run, so any pipeline rerun starts a fresh cache; the `tiles` step deletes the old
-versions and pre-renders the low zoom levels for the common ranges.
+Cache: PNGs (zero bytes for a blank tile) under TILE_DIR/<data version>/<from>_<to>/<mask>/<z>/<x>/<y>.png. The data version is the id of
+the last finished `stats` run, so any pipeline rerun starts a fresh cache. Tiles are rendered when requested
+(`get_tile`) and ahead of time by the background service in `tilegen.py`; both write the same files.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ import math
 import shutil
 import struct
 import sys
+import threading
 import zlib
 from datetime import date, timedelta
 from pathlib import Path
@@ -33,7 +34,6 @@ TILE = 256
 PAD = 24                     # extra pixels drawn around the tile, cropped afterwards
 BIN_MAX_ZOOM = 7             # up to here tiles are drawn from bin_day
 MAX_ZOOM = 18
-PRERENDER_ZOOM = 6           # the tiles step renders z0..this for the common ranges
 MASK_ALL = 7                 # MODIS | VIIRS | COMMON
 M_BIT, V_BIT, C_BIT = 1, 2, 4
 
@@ -206,24 +206,31 @@ _writes = 0
 
 
 def get_tile(con, z: int, x: int, y: int, d0: str, d1: str, mask: int) -> bytes:
-    """Cached tile bytes, rendering and storing on a miss. Empty tiles are never written to disk."""
-    global _writes
+    """Cached tile bytes, rendering and storing on a miss.
+
+    A blank tile is stored as a zero-byte file, so it is known to be done and never drawn again, and
+    is answered with the shared transparent PNG.
+    """
     path = tile_path(data_version(con), d0, d1, mask, z, x, y)
     try:
-        return path.read_bytes()
+        return path.read_bytes() or empty_tile()
     except FileNotFoundError:
         pass
     png = render_from_db(con, z, x, y, d0, d1, mask)
-    if png is None:
-        return empty_tile()
+    write_tile(path, png)
+    return png or empty_tile()
+
+
+def write_tile(path: Path, png: bytes | None) -> None:
+    """Store a tile atomically, so a request never reads a half-written file. None stores the blank marker."""
+    global _writes
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_bytes(png)
+    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
+    tmp.write_bytes(png or b"")
     tmp.replace(path)
     _writes += 1
     if _writes % 500 == 0:
         prune(settings.TILE_CACHE_MB * 1024 * 1024)
-    return png
 
 
 def clear_old_versions(keep: int) -> None:
@@ -247,7 +254,7 @@ def prune(max_bytes: int) -> int:
 
 
 def common_ranges(first: str, last: str) -> list[tuple[str, str]]:
-    """Ranges the web app offers as presets, pre-rendered by the tiles step."""
+    """Ranges the web app offers as presets: all data, the last year and the last 30 days."""
     end = date.fromisoformat(last)
     out = [(first, last)]
     for days in (365, 30):
@@ -255,40 +262,6 @@ def common_ranges(first: str, last: str) -> list[tuple[str, str]]:
         if (start.isoformat(), last) not in out:
             out.append((start.isoformat(), last))
     return out
-
-
-def prerender(con, first: str, last: str, max_zoom: int = PRERENDER_ZOOM) -> int:
-    """Render and cache z0..max_zoom for the common ranges with all layers on. Returns tiles written."""
-    version = data_version(con)
-    written = 0
-    for d0, d1 in common_ranges(first, last):
-        cells = load_cells(con, d0, d1)
-        lat, lon = cells[0], cells[1]
-        for z in range(0, max_zoom + 1):
-            px, py = project(lat, lon, z)
-            tx, ty = np.floor(px / TILE).astype(int), np.floor(py / TILE).astype(int)
-            for x, y in sorted({*zip(tx.tolist(), ty.tolist())} | _neighbours(tx, ty, z)):
-                path = tile_path(version, d0, d1, MASK_ALL, z, x, y)
-                if path.exists() or not (0 <= x < 2 ** z and 0 <= y < 2 ** z):
-                    continue
-                png = render(z, x, y, MASK_ALL, *_slice(cells, z, x, y))
-                if png is not None:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(png)
-                    written += 1
-    return written
-
-
-def _neighbours(tx, ty, z):
-    """Tiles next to occupied ones: blurred spots spill a few pixels over the border."""
-    return {(x + dx, y + dy) for x, y in zip(tx.tolist(), ty.tolist()) for dx in (-1, 0, 1) for dy in (-1, 0, 1)}
-
-
-def _slice(cells, z: int, x: int, y: int):
-    s, n, w, e = tile_box(z, x, y)
-    lat, lon = cells[0], cells[1]
-    keep = (lat >= s - db.BIN_DEG) & (lat <= n + db.BIN_DEG) & (lon >= w - db.BIN_DEG) & (lon <= e + db.BIN_DEG)
-    return tuple(a[keep] for a in cells)
 
 
 if __name__ == "__main__":

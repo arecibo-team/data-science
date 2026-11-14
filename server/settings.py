@@ -37,3 +37,7 @@ def today() -> str:
 # Heat tile cache: rendered PNGs per data version, date range, layer mask and zoom level.
 TILE_DIR = os.environ.get("FIRMS_TILE_DIR", str(C.DATA_DIR / "tiles"))
 TILE_CACHE_MB = int(os.environ.get("FIRMS_TILE_CACHE_MB", "2000"))
+# Background tile generation (server/tilegen.py): every zoom level up to this one is rendered ahead of time
+# for the preset date ranges; deeper zooms are rendered when first requested. Cost grows about 3x per level.
+TILE_BG = os.environ.get("FIRMS_TILE_BG", "1") != "0"
+TILE_BG_MAX_ZOOM = int(os.environ.get("FIRMS_TILE_BG_MAX_ZOOM", "9"))

@@ -1,3 +1,4 @@
+import type { TileStatus } from "../data";
 import type { PipelineStep } from "../types";
 import { type ConfFilter, type Filters, type LayerCounts, type LayerKey, type StatusFilter } from "../model";
 
@@ -13,6 +14,8 @@ interface Props {
   loading: boolean;
   /** Set when the view holds too many detections to draw one by one; heat tiles are shown instead. */
   overview: { total: number } | null;
+  /** Background heat tile generation on the server, or null before the first answer. */
+  tileStatus: TileStatus | null;
   /** Pipeline steps while the server is still building data; null when idle. */
   pipeline: PipelineStep[] | null;
 }
@@ -29,7 +32,7 @@ function preset(dates: string[], days: number): Pick<Filters, "from" | "to"> {
   return { from: dates.find((d) => d >= want) ?? to, to };
 }
 
-export function Controls({ dates, filters, onChange, counts, stats, loading, overview, pipeline }: Props) {
+export function Controls({ dates, filters, onChange, counts, stats, loading, overview, tileStatus, pipeline }: Props) {
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch });
   const setLayer = (key: LayerKey, on: boolean) => set({ layers: { ...filters.layers, [key]: on } });
   const grid = overview !== null;
@@ -70,6 +73,13 @@ export function Controls({ dates, filters, onChange, counts, stats, loading, ove
             {dates.map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
         </label>
+        {tileStatus?.state === "building" && tileStatus.total ? (
+          <p className="muted small">
+            Heat tiles are being generated in the background (zoom {tileStatus.zoom} of {tileStatus.max_zoom},{" "}
+            {Math.round(((tileStatus.done ?? 0) / tileStatus.total) * 100)}%). Views you open are rendered on
+            request, so nothing waits for it.
+          </p>
+        ) : null}
         <p className="muted small" role="status">
           {loading
             ? "Loading from the server…"

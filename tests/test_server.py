@@ -252,27 +252,127 @@ def test_tile_is_cached_per_zoom_and_invalidated_by_a_new_data_version(tmp_db, m
     assert len(list((tmp_db / "tiles").rglob("*.png"))) == 1
 
 
-def test_empty_tile_is_not_written_and_bad_tiles_are_rejected(tmp_db, monkeypatch):
+def test_blank_tile_is_remembered_and_bad_tiles_are_rejected(tmp_db, monkeypatch):
     monkeypatch.setattr(settings, "TILE_DIR", str(tmp_db / "tiles"))
     c = _client_with_bins()
     r = c.get("/api/tiles/4/0/0.png", params={"from": "2025-08-01", "to": "2025-08-02"})
     assert r.status_code == 200 and _png_alpha(r.content)[..., 3].max() == 0
-    assert not list((tmp_db / "tiles").rglob("*.png"))
+    marker = list((tmp_db / "tiles").rglob("*.png"))
+    assert len(marker) == 1 and marker[0].stat().st_size == 0  # blank is remembered, as a zero-byte file
+    again = c.get("/api/tiles/4/0/0.png", params={"from": "2025-08-01", "to": "2025-08-02"})
+    assert again.status_code == 200 and again.content == r.content
     assert c.get("/api/tiles/2/9/0.png", params={"from": "2025-08-01", "to": "2025-08-02"}).status_code == 404
     assert c.get("/api/tiles/2/0/0.png", params={"from": "2025-08-01", "to": "2025-08-02", "layers": 9}).status_code == 422
 
 
-def test_prerender_writes_low_zoom_tiles_for_common_ranges(tmp_db, monkeypatch):
-    from server import tiles
-    monkeypatch.setattr(settings, "TILE_DIR", str(tmp_db / "tiles"))
+# ---------- background tile generation ----------
+
+def test_plan_lists_only_tiles_with_data_lowest_zoom_first(tmp_db):
+    from server import tilegen
     _client_with_bins()
     con = db.connect()
-    n = tiles.prerender(con, "2025-08-01", "2025-08-02", max_zoom=3)
-    assert n > 0
+    jobs = tilegen.plan(con, 4)
+    assert [j.z for j in jobs] == sorted(j.z for j in jobs)
+    assert {j.z for j in jobs} == {0, 1, 2, 3, 4}
+    z4 = next(j for j in jobs if j.z == 4)
+    x, y, _, _ = _tile_xy(4, 10.0, 20.0)
+    assert [x, y] in z4.xy.tolist()
+    assert len(z4.xy) < 40  # two spots, not the 256 tiles of the zoom level
+    assert (np.array([0, 0]) == z4.xy).all(axis=1).sum() == 0  # the empty corner of the world is not planned
+
+
+def test_service_renders_every_level_in_the_background_and_skips_existing(tmp_db, monkeypatch):
+    from server import tilegen, tiles
+    monkeypatch.setattr(settings, "TILE_DIR", str(tmp_db / "tiles"))
+    monkeypatch.setattr(tilegen, "PAUSE_PER_TILE_S", 0)
+    _client_with_bins()
+    con = db.connect()
     version = tiles.data_version(con)
-    x, y, _, _ = _tile_xy(3, 10.0, 20.0)
-    assert tiles.tile_path(version, "2025-08-01", "2025-08-02", 7, 3, x, y).exists()
-    assert tiles.prune(0) == 0 and not list((tmp_db / "tiles").rglob("*.png"))
+    svc = tilegen.TileService(max_zoom=5)
+    assert svc.run_once(con, version) is True
+    st = svc.status()
+    assert st["state"] == "idle" and st["done"] == st["total"] > 0 and st["max_zoom"] == 5
+    files = list((tmp_db / "tiles").rglob("*.png"))
+    assert {int(f.parent.parent.name) for f in files} == {0, 1, 2, 3, 4, 5}  # every zoom level, each cached
+
+    # A second pass finds everything in place and renders nothing.
+    calls = []
+    real = tiles.render_from_db
+    monkeypatch.setattr(tiles, "render_from_db", lambda *a, **k: calls.append(a) or real(*a, **k))
+    assert svc.run_once(con, version) is True and calls == []
+
+
+def test_a_request_is_served_while_generation_is_still_running(tmp_db, monkeypatch):
+    import threading
+    from server import tilegen, tiles
+    monkeypatch.setattr(settings, "TILE_DIR", str(tmp_db / "tiles"))
+    c = _client_with_bins()
+    con = db.connect()
+    version = tiles.data_version(con)
+
+    gate, started = threading.Event(), threading.Event()
+    real = tiles.render_from_db
+
+    def slow(*a, **k):  # the background thread is held inside its first tile
+        if threading.current_thread().name == "bg-test":
+            started.set()
+            gate.wait(10)
+        return real(*a, **k)
+
+    monkeypatch.setattr(tiles, "render_from_db", slow)
+    monkeypatch.setattr(tilegen, "PAUSE_PER_TILE_S", 0)
+    svc = tilegen.TileService(max_zoom=5)
+    t = threading.Thread(target=lambda: svc.run_once(db.connect(), version), name="bg-test")
+    t.start()
+    assert started.wait(10)
+    assert svc.status()["state"] == "building"
+
+    x, y, px, py = _tile_xy(6, 10.0, 20.0)  # a level the service has not reached, requested right now
+    r = c.get(f"/api/tiles/6/{x}/{y}.png", params={"from": "2025-08-01", "to": "2025-08-02"})
+    assert r.status_code == 200 and _png_alpha(r.content)[py, px, 3] > 0
+    assert svc.status()["state"] == "building"  # the request did not wait for, or finish, the generation
+    gate.set()
+    t.join(20)
+    assert svc.status()["state"] == "idle"
+
+
+def test_service_stops_when_new_data_arrives(tmp_db, monkeypatch):
+    from server import tilegen, tiles
+    monkeypatch.setattr(settings, "TILE_DIR", str(tmp_db / "tiles"))
+    monkeypatch.setattr(tilegen, "PAUSE_PER_TILE_S", 0)
+    monkeypatch.setattr(tilegen, "CHECK_EVERY", 1)
+    _client_with_bins()
+    con = db.connect()
+    version = tiles.data_version(con)
+    real = tiles.render_from_db
+
+    def newer(*a, **k):  # a pipeline pass finishes while tiles are being drawn
+        with db.session() as w:
+            w.execute("INSERT INTO pipeline_steps(step, fingerprint, status, started_at) VALUES ('stats','z','done','now')")
+        return real(*a, **k)
+
+    monkeypatch.setattr(tiles, "render_from_db", newer)
+    svc = tilegen.TileService(max_zoom=6)
+    assert svc.run_once(con, version) is False
+    assert svc.completed_version == 0
+
+
+def test_service_stands_by_while_the_pipeline_rewrites_detections(tmp_db):
+    from server import tilegen
+    _client_with_bins()
+    svc = tilegen.TileService(max_zoom=2)
+    con = db.connect()
+    assert svc._unstable(con) is False
+    with db.session() as w:
+        w.execute("INSERT INTO pipeline_steps(step, fingerprint, status, started_at) VALUES ('tag','q','running','now')")
+    assert svc._unstable(con) is True
+
+
+def test_status_endpoint_reports_the_service(tmp_db):
+    c = _client_with_bins()
+    body = c.get("/api/tiles/status").json()
+    assert body["enabled"] is True and body["state"] in {"starting", "waiting", "paused", "building", "idle"}
+    assert c.get("/api/tiles/status").status_code == 200  # not captured by the {z}/{x}/{y} route
 
 
 def test_counts_for_the_overview_follow_range_and_box(tmp_db):

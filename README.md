@@ -43,7 +43,6 @@ it proxies `/api` to the server.
 | `sentinel2` | Sentinel-2 burn scars into `incidents` (slow, resumable) | `harmonize` reran |
 | `tag` | marks detections inside an incident | `harmonize` reran or the incidents changed |
 | `stats` | per-day counts, per-cell counts (`bin_day`), per-incident counts | `tag` reran |
-| `tiles` | deletes old heat tile caches, pre-renders zoom 0-6 for all / last year / last 30 days | `stats` reran |
 
 The `pipeline_steps` table records each run (inputs, status, duration, rows, error). A step is skipped when a
 `done` row with the same inputs exists. Dependents include the upstream run id, so rerunning a step reruns
@@ -61,16 +60,26 @@ Settings (environment): `FIRMS_START`, `FIRMS_BBOX` (default `-25,-20,45,72`), `
 
 ### API
 
-`/api/meta`, `/api/pipeline`, `/api/points`, `/api/incidents`, `/api/tiles/{z}/{x}/{y}.png`. The map asks for the
+`/api/meta`, `/api/pipeline`, `/api/points`, `/api/counts`, `/api/incidents`, `/api/tiles/{z}/{x}/{y}.png`,
+`/api/tiles/status`. The map asks for the
 current view (date range plus bounding box). `/api/points` returns binary columns; when a view holds more than
 `FIRMS_MAX_POINTS` (60k) detections the map shows heat tiles instead (density on a log scale, orange MODIS,
 blue VIIRS, red = confirmed inside an incident).
 
-Tiles are cached on disk under `data/tiles/<data version>/<from>_<to>/<layer mask>/<z>/<x>/<y>.png`, one file per
-zoom level, so a repeat view costs about a millisecond. Zoom 0-7 is drawn from the per-day, per-0.1° `bin_day`
-table, higher zooms from the detections themselves. A pipeline rerun starts a new cache version (old ones are
-deleted by the `tiles` step); the cache is capped by `FIRMS_TILE_CACHE_MB` (default 2000). The sidebar's
-"3 days / 30 days / 1 year / All" presets use exactly the ranges that are pre-rendered.
+Tiles are cached on disk under `data/tiles/<data version>/<from>_<to>/<layer mask>/<z>/<x>/<y>.png`, one file
+per zoom level (a blank tile is a zero-byte file), so a repeat view costs about a millisecond. Zoom 0-7 is drawn
+from the per-day, per-0.1° `bin_day` table, higher zooms from the detections themselves. A new pipeline result
+starts a new cache version; the old one is deleted. The cache is capped by `FIRMS_TILE_CACHE_MB` (default 2000).
+
+**Tiles are generated in the background, and never block a request.** A thread in the server
+(`server/tilegen.py`) renders every zoom level from 0 up to `FIRMS_TILE_BG_MAX_ZOOM` (default 9; about 16k tiles,
+roughly an hour at low priority) for the three presets in the sidebar (all data, last year, last 30 days), lowest
+zoom first so each level is usable early. It stands by while the pipeline is rewriting detections and starts over
+when new data arrives. A tile that has not been generated yet is rendered on request, in the request itself, and
+cached, so the map never waits for the background work; the generator skips tiles that already exist. Deeper
+zooms, other date ranges and other layer combinations are rendered on first request only. Progress is at
+`/api/tiles/status` and shown in the sidebar. `FIRMS_TILE_BG=0` turns the generator off (tiles still render on
+request).
 
 ### Independent European incidents
 

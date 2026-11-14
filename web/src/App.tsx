@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { loadCounts, loadIncidents, loadMeta, loadPipeline, loadPoints, pointAt, tileUrl, type Counts, type Query } from "./data";
+import { loadCounts, loadIncidents, loadMeta, loadPipeline, loadPoints, loadTileStatus, pointAt, tileUrl, type Counts, type Query, type TileStatus } from "./data";
 import { MapView } from "./components/MapView";
 import { Controls } from "./components/Controls";
 import { SENSOR_COLOR } from "./components/PointLayer";
@@ -46,6 +46,7 @@ export default function App() {
   const [steps, setSteps] = useState<PipelineStep[]>([]);
   // Bumped when the pipeline finishes a pass, so the map asks the server again.
   const [dataVersion, setDataVersion] = useState(0);
+  const [tileStatus, setTileStatus] = useState<TileStatus | null>(null);
   const loaded = useRef<Loaded | null>(null);
 
   const dates = useMemo(() => (meta ? Object.keys(meta.days).sort() : []), [meta]);
@@ -97,6 +98,28 @@ export default function App() {
     }, 3000);
     return () => clearInterval(timer);
   }, [running, refreshMeta]);
+
+  // The server renders heat tiles in the background; follow its progress until it is done. A new data
+  // version (dataVersion) starts a new round, so polling restarts.
+  useEffect(() => {
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = () =>
+      loadTileStatus()
+        .then((s) => {
+          if (stop) return;
+          setTileStatus(s);
+          if (s.enabled && s.state !== "idle") timer = setTimeout(poll, 4000);
+        })
+        .catch(() => {
+          if (!stop) timer = setTimeout(poll, 10000);
+        });
+    poll();
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+    };
+  }, [dataVersion]);
 
   // Ask the server for what is in view. Debounced; a pan inside the loaded box asks for nothing.
   useEffect(() => {
@@ -212,6 +235,7 @@ export default function App() {
           stats={stats}
           loading={loading}
           overview={overview}
+          tileStatus={tileStatus}
           pipeline={running ? steps : null}
         />
         {error && <p className="error">{error}</p>}

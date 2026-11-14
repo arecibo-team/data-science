@@ -21,6 +21,18 @@ async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   return r.json();
 }
 
+/** GET /api/tiles/status: progress of the server's background tile generation. */
+export interface TileStatus {
+  enabled: boolean;
+  state: "starting" | "waiting" | "paused" | "building" | "idle" | "error" | "off";
+  done?: number;
+  total?: number;
+  zoom?: number | null;
+  max_zoom?: number;
+}
+
+export const loadTileStatus = (): Promise<TileStatus> => getJson(api("tiles/status"));
+
 export interface Counts {
   MODIS: number;
   VIIRS: number;
