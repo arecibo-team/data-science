@@ -125,7 +125,22 @@ export function pointAt(d: PointsData, i: number, enums: Enums): Point {
 
 // ---- forecast model ------------------------------------------------------
 
+/** Replay of the event held out of training, computed after a run with that run's own model. */
+export interface EventReplay {
+  event: { name: string; first: string; last: string; bbox: number[]; spike: string[] };
+  horizon: number;
+  threshold: number;
+  europe: { cell_days: number; positives: number; pr_auc: number | null; baseline_pr_auc: number | null; roc_auc: number | null; recall: number; precision: number };
+  /** Per day in the window, for the event's region: cells that burned in the next `horizon` days, alerts, real alerts, expected burning cells. */
+  days: { date: string; burning: number; alerts: number; real: number; risk: number }[];
+  spike_cells: { in_region: number; scoreable: number; active: number };
+  /** Spike cells flagged k days before the spike, by group (new = quiet the 10 days before, burning = already hot). */
+  lead: Record<"new" | "burning", { cells: number; flagged: Record<string, number> }>;
+  lead_days: number[];
+}
+
 export interface RunMetrics {
+  benchmark?: EventReplay;
   threshold: number;
   horizon: number;
   label?: string;
@@ -149,7 +164,10 @@ export interface ModelRun {
   message: string | null;
   checkpoints: number;
   last_checkpoint_round: number | null;
-  params: { horizon: number; lr: number; label?: string };
+  params: {
+    horizon: number; lr: number; label?: string; train_end?: string;
+    holdout_event?: { name: string; first: string; last: string; bbox: number[]; spike: string[] } | null;
+  };
 }
 
 export interface Runs {

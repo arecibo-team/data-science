@@ -101,3 +101,14 @@ dd { margin: 0; }
 .soil-legend { margin-top: 6px; gap: 2px; font-size: 12px; }
 .base-muted { filter: grayscale(1) brightness(1.08) contrast(0.9); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .base-muted { filter: grayscale(1) invert(1) brightness(0.8) contrast(0.9); } }
+.lead { width: 100%; border-collapse: collapse; margin-top: 8px; }
+.lead th, .lead td { padding: 2px 4px; text-align: right; border-bottom: 1px solid var(--border); font-weight: normal; }
+.lead th:first-child, .lead td:first-child { text-align: left; }
+.strip { position: relative; height: 8px; margin: 0 8px 6px; border-radius: 3px; overflow: hidden; background: var(--border); }
+.strip span { position: absolute; top: 0; bottom: 0; }
+.strip-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 2px 0 4px; }
+.state-badge { margin-left: 8px; padding: 1px 7px; border-radius: 9px; color: #fff; font-size: 11px; vertical-align: 2px; }
+.ring { display: inline-block; width: 11px; height: 11px; border: 3px solid #0369a1; border-radius: 50%; box-sizing: border-box; margin-right: 4px; vertical-align: -1px; }
+.map-wrap.split { display: flex; gap: 2px; }
+.map-wrap.split .half { position: relative; flex: 1; min-width: 0; }
+.map-title { position: absolute; z-index: 1000; top: 8px; left: 50px; padding: 2px 9px; border-radius: 4px; background: var(--panel); color: var(--text); font-size: 12px; box-shadow: 0 1px 4px #0004; }
