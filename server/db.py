@@ -72,6 +72,8 @@ CREATE TABLE IF NOT EXISTS clusters (
 CREATE TABLE IF NOT EXISTS bin_day (
     r INTEGER NOT NULL, c INTEGER NOT NULL, date TEXT NOT NULL,
     m INTEGER NOT NULL, v INTEGER NOT NULL, cm INTEGER NOT NULL, cv INTEGER NOT NULL,
+    b INTEGER NOT NULL,                 -- matched by both sensors
+    lo INTEGER NOT NULL, hi INTEGER NOT NULL,   -- low / high confidence
     PRIMARY KEY (r, c, date)
 ) WITHOUT ROWID;
 
@@ -81,6 +83,7 @@ CREATE TABLE IF NOT EXISTS day_stats (
 """
 
 BIN_DEG = 0.1  # cell size of bin_day, in degrees
+BIN_SCHEMA = 2  # bump when bin_day's columns change; the stats step then rebuilds it
 
 DETECTIONS_DDL = """
 CREATE TABLE {name} (
@@ -123,6 +126,9 @@ def connect(path: str | None = None, readonly: bool = False) -> sqlite3.Connecti
 def init_db(path: str | None = None) -> None:
     con = connect(path)
     try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(bin_day)")}
+        if cols and "hi" not in cols:  # older layout: regenerable, rebuilt by the stats step
+            con.execute("DROP TABLE bin_day")
         con.executescript(SCHEMA)
         if not con.execute("SELECT 1 FROM sqlite_master WHERE name='detections'").fetchone():
             con.execute(DETECTIONS_DDL.format(name="detections"))

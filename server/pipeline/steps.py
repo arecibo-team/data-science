@@ -157,7 +157,7 @@ def _tag_run() -> int:
 
 
 def _stats_plan() -> Plan:
-    return Plan()
+    return Plan({"bin_schema": db.BIN_SCHEMA})
 
 
 def _stats_run() -> int:
@@ -173,7 +173,8 @@ def _stats_run() -> int:
             INSERT INTO bin_day
             SELECT CAST((lat + 90) / :d AS INTEGER), CAST((lon + 180) / :d AS INTEGER), date(ts, 'unixepoch'),
                    SUM(sensor = 1), SUM(sensor = 2),
-                   SUM(sensor = 1 AND incident_id IS NOT NULL), SUM(sensor = 2 AND incident_id IS NOT NULL)
+                   SUM(sensor = 1 AND incident_id IS NOT NULL), SUM(sensor = 2 AND incident_id IS NOT NULL),
+                   SUM(status = 1), SUM(confidence = 1), SUM(confidence = 3)
             FROM detections GROUP BY 1, 2, 3""", {"d": db.BIN_DEG})
         con.execute("UPDATE incidents SET detections = COALESCE("
                     "(SELECT COUNT(*) FROM detections d WHERE d.incident_id = incidents.incident_id), 0)")

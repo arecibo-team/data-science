@@ -5,15 +5,14 @@ interface Props {
   dates: string[];
   filters: Filters;
   onChange: (f: Filters) => void;
-  /** Counts in the loaded map view and date range, shown next to each layer. Null in the heat overview. */
-  counts: LayerCounts | null;
+  /** Counts in the map view and date range, shown next to each layer. */
+  counts: LayerCounts;
   /** Visible detections and how many are matched by both sensors. Null in grid view. */
   stats: { total: number; matched: number } | null;
   /** True while the server is being asked for the current view. */
   loading: boolean;
   /** Set when the view holds too many detections to draw one by one; heat tiles are shown instead. */
   overview: { total: number } | null;
-  incidentCount: number;
   /** Pipeline steps while the server is still building data; null when idle. */
   pipeline: PipelineStep[] | null;
 }
@@ -30,11 +29,10 @@ function preset(dates: string[], days: number): Pick<Filters, "from" | "to"> {
   return { from: dates.find((d) => d >= want) ?? to, to };
 }
 
-export function Controls({ dates, filters, onChange, counts, stats, loading, overview, incidentCount, pipeline }: Props) {
+export function Controls({ dates, filters, onChange, counts, stats, loading, overview, pipeline }: Props) {
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch });
   const setLayer = (key: LayerKey, on: boolean) => set({ layers: { ...filters.layers, [key]: on } });
   const grid = overview !== null;
-  const n = (v: number | undefined) => (v === undefined ? "–" : v.toLocaleString());
 
   // Any range is allowed. Keep it ordered by pulling the other end along if needed.
   const setFrom = (from: string) => set({ from, to: filters.to < from ? from : filters.to });
@@ -86,17 +84,17 @@ export function Controls({ dates, filters, onChange, counts, stats, loading, ove
         <label className="check">
           <input type="checkbox" checked={filters.layers.MODIS} onChange={(e) => setLayer("MODIS", e.target.checked)} />
           <span className="dot dot-modis" /> MODIS
-          <span className="muted"> {n(counts?.MODIS)}</span>
+          <span className="muted"> {counts.MODIS.toLocaleString()}</span>
         </label>
         <label className="check">
           <input type="checkbox" checked={filters.layers.VIIRS} onChange={(e) => setLayer("VIIRS", e.target.checked)} />
           <span className="dot dot-viirs" /> VIIRS
-          <span className="muted"> {n(counts?.VIIRS)}</span>
+          <span className="muted"> {counts.VIIRS.toLocaleString()}</span>
         </label>
         <label className="check">
           <input type="checkbox" checked={filters.layers.COMMON} onChange={(e) => setLayer("COMMON", e.target.checked)} />
           <span className="dot dot-common" /> COMMON
-          <span className="muted"> {n(counts?.COMMON)}</span>
+          <span className="muted"> {counts.COMMON.toLocaleString()}</span>
         </label>
         <p className="muted small">
           COMMON is NASA detections confirmed inside a European incident, from either sensor.
@@ -108,7 +106,7 @@ export function Controls({ dates, filters, onChange, counts, stats, loading, ove
             onChange={(e) => setLayer("INCIDENTS", e.target.checked)}
           />
           <span className="swatch" /> EU Incidents
-          <span className="muted"> {n(incidentCount)}</span>
+          <span className="muted"> {counts.INCIDENTS.toLocaleString()}</span>
         </label>
         <p className="muted small">
           Independent checks only, none derived from NASA data: Copernicus EMS wildfire mapping areas
@@ -148,8 +146,8 @@ export function Controls({ dates, filters, onChange, counts, stats, loading, ove
         </select>
         <p className="muted small">
           {stats
-            ? `${stats.matched.toLocaleString()} of ${stats.total.toLocaleString()} shown are matched by both sensors.`
-            : "Needs individual detections: zoom in or shorten the range."}
+            ? `${stats.matched.toLocaleString()} of ${stats.total.toLocaleString()} ${grid ? "in view" : "shown"} are matched by both sensors.`
+            : "No detections in view."}
         </p>
       </fieldset>
     </div>

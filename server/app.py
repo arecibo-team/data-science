@@ -4,6 +4,7 @@
     GET /api/pipeline    the pipeline step ledger
     GET /api/points      detections in a date range and bounding box, as binary columns
     GET /api/tiles/z/x/y.png   heat tiles, for views with too many points (cached per zoom level)
+    GET /api/counts      totals for a range and box, for the heat overview
     GET /api/incidents   incident polygons overlapping a date range and bounding box
 
 The built web app (web/dist) is served from / when it exists. The pipeline runs in a background
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import struct
 import threading
 from contextlib import asynccontextmanager
@@ -207,6 +209,28 @@ def api_tile(z: int, x: int, y: int, date_from: str = Query(..., alias="from"), 
         con.close()
     return Response(png, media_type="image/png", headers={
         "Cache-Control": "public, max-age=3600", "ETag": f'"{version}"'})
+
+
+@app.get("/api/counts")
+def api_counts(q: Query_ = Depends(_params)):
+    """Totals for the heat overview, where single detections are not sent. Summed from the per-day,
+    per-0.1 degree cell table over the cells whose centre is inside the box, so they are exact for the
+    date range and off by at most one cell width at the edge of the view."""
+    deg = db.BIN_DEG
+    con = db.connect(readonly=True)
+    try:
+        r = con.execute(
+            "SELECT COALESCE(SUM(m), 0), COALESCE(SUM(v), 0), COALESCE(SUM(cm), 0), COALESCE(SUM(cv), 0), "
+            "COALESCE(SUM(b), 0), COALESCE(SUM(lo), 0), COALESCE(SUM(hi), 0) FROM bin_day "
+            "WHERE date >= ? AND date <= ? AND r BETWEEN ? AND ? AND c BETWEEN ? AND ?",
+            (q.date_from, q.date_to,
+             math.ceil((q.south + 90) / deg - 0.5), math.floor((q.north + 90) / deg - 0.5),
+             math.ceil((q.west + 180) / deg - 0.5), math.floor((q.east + 180) / deg - 0.5))).fetchone()
+    finally:
+        con.close()
+    m, v, cm, cv, both, low, high = r
+    return {"MODIS": m, "VIIRS": v, "COMMON": cm + cv, "total": m + v, "matched": both,
+            "confidence": {"low": low, "high": high, "nominal": m + v - low - high}}
 
 
 @app.get("/api/incidents")

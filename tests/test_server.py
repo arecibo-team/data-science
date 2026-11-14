@@ -196,7 +196,8 @@ def _client_with_bins():
         con.execute("DELETE FROM bin_day")
         con.execute("""INSERT INTO bin_day SELECT CAST((lat + 90) / 0.1 AS INTEGER), CAST((lon + 180) / 0.1 AS INTEGER),
                        date(ts, 'unixepoch'), SUM(sensor = 1), SUM(sensor = 2),
-                       SUM(sensor = 1 AND incident_id IS NOT NULL), SUM(sensor = 2 AND incident_id IS NOT NULL)
+                       SUM(sensor = 1 AND incident_id IS NOT NULL), SUM(sensor = 2 AND incident_id IS NOT NULL),
+                       SUM(status = 1), SUM(confidence = 1), SUM(confidence = 3)
                        FROM detections GROUP BY 1, 2, 3""")
         con.execute("INSERT INTO pipeline_steps(step, fingerprint, status, started_at) VALUES ('stats', 'x', 'done', 'now')")
     return c
@@ -272,6 +273,29 @@ def test_prerender_writes_low_zoom_tiles_for_common_ranges(tmp_db, monkeypatch):
     x, y, _, _ = _tile_xy(3, 10.0, 20.0)
     assert tiles.tile_path(version, "2025-08-01", "2025-08-02", 7, 3, x, y).exists()
     assert tiles.prune(0) == 0 and not list((tmp_db / "tiles").rglob("*.png"))
+
+
+def test_counts_for_the_overview_follow_range_and_box(tmp_db):
+    c = _client_with_bins()
+    r = c.get("/api/counts", params={"from": "2025-08-01", "to": "2025-08-02"}).json()
+    assert r == {"MODIS": 1, "VIIRS": 2, "COMMON": 1, "total": 3, "matched": 2,
+                 "confidence": {"low": 1, "nominal": 1, "high": 1}}
+    one_day = c.get("/api/counts", params={"from": "2025-08-02", "to": "2025-08-02"}).json()
+    assert (one_day["MODIS"], one_day["VIIRS"], one_day["COMMON"], one_day["matched"]) == (0, 1, 1, 0)
+    near = c.get("/api/counts", params={"from": "2025-08-01", "to": "2025-08-02",
+                                        "west": 15, "east": 25, "south": 5, "north": 15}).json()
+    assert (near["MODIS"], near["VIIRS"], near["total"]) == (1, 1, 2)  # Spain's detection is outside the box
+    empty = c.get("/api/counts", params={"from": "2030-01-01", "to": "2030-01-02"}).json()
+    assert empty["total"] == 0 and empty["confidence"]["nominal"] == 0
+
+
+def test_old_bin_day_layout_is_dropped_so_the_stats_step_can_rebuild_it(tmp_db):
+    with db.session() as con:
+        con.execute("DROP TABLE bin_day")
+        con.execute("CREATE TABLE bin_day (r INTEGER, c INTEGER, date TEXT, m INTEGER, v INTEGER, cm INTEGER, cv INTEGER)")
+    db.init_db()
+    with db.session() as con:
+        assert "hi" in {r[1] for r in con.execute("PRAGMA table_info(bin_day)")}
 
 
 def test_incidents_and_meta(tmp_db):

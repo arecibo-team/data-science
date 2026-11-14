@@ -28,7 +28,7 @@ SKIP_STEPS = {s.strip() for s in os.environ.get("PIPELINE_SKIP", "").split(",") 
 RUN_ON_START = os.environ.get("PIPELINE_ON_START", "1") != "0"
 
 # Above this many detections in the view, the API answers with grid cells instead of points.
-MAX_POINTS = int(os.environ.get("FIRMS_MAX_POINTS", "250000"))
+MAX_POINTS = int(os.environ.get("FIRMS_MAX_POINTS", "60000"))
 
 
 def today() -> str:

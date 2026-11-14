@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { loadIncidents, loadMeta, loadPipeline, loadPoints, pointAt, tileUrl, type Query } from "./data";
+import { loadCounts, loadIncidents, loadMeta, loadPipeline, loadPoints, pointAt, tileUrl, type Counts, type Query } from "./data";
 import { MapView } from "./components/MapView";
 import { Controls } from "./components/Controls";
 import { SENSOR_COLOR } from "./components/PointLayer";
@@ -38,7 +38,7 @@ export default function App() {
   const [filters, setFilters] = useState<Filters | null>(null);
   const [points, setPoints] = useState<PointsData | null>(null);
   // Set when the view holds more detections than the server sends as points: heat tiles are shown instead.
-  const [overview, setOverview] = useState<{ total: number } | null>(null);
+  const [overview, setOverview] = useState<{ total: number; counts: Counts } | null>(null);
   const [incidents, setIncidents] = useState<IncidentFeature[]>([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Point | null>(null);
@@ -105,7 +105,7 @@ export default function App() {
     const sameRange = prev && prev.from === from && prev.to === to && prev.version === dataVersion;
     // In the overview, zooming in a lot may bring the count under the point limit: ask again.
     const stillGood =
-      sameRange && inside(view.bounds, prev.bounds) && (overview ? area(view.bounds) > area(prev.bounds) / 9 : true);
+      sameRange && inside(view.bounds, prev.bounds) && (overview ? area(view.bounds) > area(prev.bounds) / 3 : true);
     if (stillGood) {
       setLoading(false); // an earlier in-flight request was cancelled by this effect's cleanup
       return;
@@ -119,9 +119,11 @@ export default function App() {
       setError(null);
       try {
         const [pts, inc] = await Promise.all([loadPoints(q, ctl.signal), loadIncidents(q, ctl.signal)]);
+        // Too many to send as points: the sidebar numbers come from the server instead.
+        const counts = pts.overflow ? await loadCounts({ from, to, ...view.bounds }, ctl.signal) : null;
         if (ctl.signal.aborted) return;
         setPoints(pts.overflow ? null : pts);
-        setOverview(pts.overflow ? { total: pts.total } : null);
+        setOverview(counts ? { total: pts.total, counts } : null);
         setIncidents(inc);
         setSelected(null);
         loaded.current = { from, to, bounds, zoom: view.zoom, version: dataVersion };
@@ -147,13 +149,18 @@ export default function App() {
     [filters, enums, points],
   );
 
-  const counts: LayerCounts | null = useMemo(
-    () => (scan ? { ...scan.counts, INCIDENTS: incidents.length } : null),
-    [scan, incidents],
-  );
+  // Points: counted from the loaded detections. Heat overview: the server's totals for the visible box.
+  const counts: LayerCounts = useMemo(() => {
+    const c = overview?.counts ?? scan?.counts ?? { MODIS: 0, VIIRS: 0, COMMON: 0 };
+    return { MODIS: c.MODIS, VIIRS: c.VIIRS, COMMON: c.COMMON, INCIDENTS: incidents.length };
+  }, [overview, scan, incidents]);
 
   const layerMask = filters ? (filters.layers.MODIS ? 1 : 0) | (filters.layers.VIIRS ? 2 : 0) | (filters.layers.COMMON ? 4 : 0) : 7;
-  const stats = scan ? { total: scan.total, matched: scan.matched } : null;
+  const stats = scan
+    ? { total: scan.total, matched: scan.matched }
+    : overview
+      ? { total: overview.counts.total, matched: overview.counts.matched }
+      : null;
   const showIncidents = filters?.layers.INCIDENTS ? incidents : [];
 
   const incidentById = useMemo(
@@ -205,7 +212,6 @@ export default function App() {
           stats={stats}
           loading={loading}
           overview={overview}
-          incidentCount={incidents.length}
           pipeline={running ? steps : null}
         />
         {error && <p className="error">{error}</p>}

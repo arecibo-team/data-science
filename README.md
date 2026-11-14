@@ -63,7 +63,7 @@ Settings (environment): `FIRMS_START`, `FIRMS_BBOX` (default `-25,-20,45,72`), `
 
 `/api/meta`, `/api/pipeline`, `/api/points`, `/api/incidents`, `/api/tiles/{z}/{x}/{y}.png`. The map asks for the
 current view (date range plus bounding box). `/api/points` returns binary columns; when a view holds more than
-`FIRMS_MAX_POINTS` (250k) detections the map shows heat tiles instead (density on a log scale, orange MODIS,
+`FIRMS_MAX_POINTS` (60k) detections the map shows heat tiles instead (density on a log scale, orange MODIS,
 blue VIIRS, red = confirmed inside an incident).
 
 Tiles are cached on disk under `data/tiles/<data version>/<from>_<to>/<layer mask>/<z>/<x>/<y>.png`, one file per

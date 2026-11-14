@@ -21,6 +21,18 @@ async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   return r.json();
 }
 
+export interface Counts {
+  MODIS: number;
+  VIIRS: number;
+  COMMON: number;
+  total: number;
+  matched: number;
+  confidence: { low: number; nominal: number; high: number };
+}
+
+/** Totals for the view, used in the heat overview where single detections are not loaded. */
+export const loadCounts = (q: Query, signal: AbortSignal): Promise<Counts> => getJson(api("counts", params(q)), signal);
+
 export const loadMeta = (): Promise<Meta> => getJson(api("meta"));
 export const loadPipeline = (): Promise<{ running: boolean; steps: PipelineStep[] }> => getJson(api("pipeline"));
 
