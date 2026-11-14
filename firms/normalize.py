@@ -140,6 +140,8 @@ def load_normalized(dedupe: bool = True) -> pd.DataFrame:
     if not files:
         return pd.DataFrame(columns=C.SCHEMA)
     df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    # Files can store timestamps in different units (us/ns); concat then yields object dtype.
+    df["acq_time_utc"] = pd.to_datetime(df["acq_time_utc"], utc=True)
     if dedupe and not df.empty:
         df["_prio"] = (df["product"] != "SP").astype(int)  # 0 = SP preferred
         df = (df.sort_values(["_prio"], kind="stable")

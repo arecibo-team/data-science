@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
-from sklearn.neighbors import BallTree
+from scipy.spatial import cKDTree
 
 from . import config as C
 
@@ -53,28 +53,39 @@ def match_cross_sensor(df: pd.DataFrame, params: MatchParams = MatchParams()) ->
     # Unit-independent conversion (pandas may store datetimes in ns or us).
     t_s = ((df["acq_time_utc"] - epoch) // pd.Timedelta(seconds=1)).to_numpy(dtype="int64")
     sensor = df["sensor"].to_numpy()
-    coords = np.radians(df[["lat", "lon"]].to_numpy(dtype=float))
+    # Unit vectors on the sphere: Euclidean distance between them is the chord length,
+    # so a KD-tree radius query on xyz matches great-circle distance exactly.
+    lat = np.radians(df["lat"].to_numpy(dtype=float))
+    lon = np.radians(df["lon"].to_numpy(dtype=float))
+    xyz = np.column_stack([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)])
     day = ((df["acq_time_utc"].dt.floor("D") - epoch) // pd.Timedelta(days=1)).to_numpy(dtype="int64")
 
     radius_rad = params.radius_km / EARTH_RADIUS_KM
+    chord = 2 * np.sin(radius_rad / 2)
     window_s = params.window_min * 60
     rows_a: list[np.ndarray] = []
     rows_b: list[np.ndarray] = []
 
+    # df is sorted by time, so `day` is non-decreasing and each day is a contiguous slice.
     unique_days = np.unique(day)
     for d in unique_days:
-        query_idx = np.where(day == d)[0]
-        cand_idx = np.where((day >= d - 1) & (day <= d + 1))[0]
+        q0, q1 = np.searchsorted(day, [d, d + 1])
+        c0, c1 = np.searchsorted(day, [d - 1, d + 2])
+        query_idx = np.arange(q0, q1)
+        cand_idx = np.arange(c0, c1)
         if len(cand_idx) < 2:
             continue
-        tree = BallTree(coords[cand_idx], metric="haversine")
-        neighbours = tree.query_radius(coords[query_idx], r=radius_rad)
-        for qi, nb in zip(query_idx, neighbours):
-            js = cand_idx[nb]
-            js = js[(sensor[js] != sensor[qi]) & (np.abs(t_s[js] - t_s[qi]) <= window_s)]
-            if js.size:
-                rows_a.append(np.full(js.size, qi))
-                rows_b.append(js)
+        tree = cKDTree(xyz[cand_idx])
+        neighbours = tree.query_ball_point(xyz[query_idx], r=chord)
+        # Flatten all neighbour lists once, then filter in a single vectorized pass.
+        counts = np.fromiter((len(nb) for nb in neighbours), dtype=np.int64, count=len(neighbours))
+        if counts.sum() == 0:
+            continue
+        qi = np.repeat(query_idx, counts)
+        js = cand_idx[np.concatenate([np.asarray(nb, dtype=np.int64) for nb in neighbours])]
+        keep = (sensor[js] != sensor[qi]) & (np.abs(t_s[js] - t_s[qi]) <= window_s)
+        rows_a.append(qi[keep])
+        rows_b.append(js[keep])
 
     if rows_a:
         a = np.concatenate(rows_a)
