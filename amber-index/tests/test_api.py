@@ -344,3 +344,18 @@ def test_area_asof_keeps_calendar(client):
     body = client.get("/area", params={"country": "GR", "start": "2007-08-01", "end": "2007-08-31", "asof": "2021-08-08"}).json()
     assert body["date"] == "2021-08-08" and body["months"][-1]["year"] == 2021
     assert body["summary"]["days"] == 31 and body["range_normal"]["rank"] <= 3
+
+
+def test_simulate_on_replay_day(client):
+    body = {"date": "2021-08-08", "shocks": [{"iso2": "IT", "events": [{"type": "FL", "alert": "Red", "count": 1}]},
+                                             {"iso2": "DE", "preset": "major_flood"}]}
+    r = client.post("/simulate", json=body)
+    assert r.status_code == 200
+    out = r.json()
+    assert out["date"] == "2021-08-08" and len(out["rows"]) == 27
+    rows = {x["iso2"]: x for x in out["rows"]}
+    assert rows["IT"]["shocked"] and rows["IT"]["power_after"] < rows["IT"]["power_before"]
+    assert not rows["SE"]["shocked"] and abs(rows["SE"]["power_change"]) < 1e-6
+    replay = client.get("/replay", params={"date": "2021-08-08"}).json()
+    gr = next(c for c in replay["countries"] if c["iso2"] == "GR")
+    assert abs(rows["GR"]["power_before"] - gr["power"]) < 0.06

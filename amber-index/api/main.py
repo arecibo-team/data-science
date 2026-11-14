@@ -412,6 +412,7 @@ class Shock(BaseModel):
 
 class SimulateRequest(BaseModel):
     year: int | None = None
+    date: str | None = Field(None, description="YYYY-MM-DD: start from that replay day, with its active fires, instead of a plain year")
     alpha: float = Field(0.5, ge=0, le=1)
     shocks: list[Shock] = Field(min_length=1)
 
@@ -438,6 +439,7 @@ class SimRow(BaseModel):
 
 class SimulateResponse(BaseModel):
     year: int
+    date: str | None = None
     rows: list[SimRow]
 
 
@@ -459,6 +461,8 @@ def simulate_presets() -> dict[str, list[HazardEvent]]:
 
 @app.post("/simulate", response_model=SimulateResponse)
 def simulate(body: SimulateRequest):
+    if body.date:
+        return _simulate_day(body)
     y = _year(body.year)
     shocks = {}
     for sh in body.shocks:
@@ -477,6 +481,25 @@ def simulate(body: SimulateRequest):
                    crew_demand=r.crew_demand, committed_share=round(r.committed_share, 4),
                    unmet_demand=round(r.unmet_demand)) for i, r in res.iterrows()]
     return SimulateResponse(year=y, rows=rows)
+
+
+def _simulate_day(body: SimulateRequest) -> SimulateResponse:
+    d = _replay_date(body.date)
+    extra = _shock_dict(body.shocks)
+    base, _ = _scenario_on(d)
+    sim, _ = _scenario_on(d, extra)
+    rows = []
+    for i in sim.index:
+        b, r = base.loc[i], sim.loc[i]
+        rows.append(SimRow(iso2=i, name=NAMES[i], shocked=i in extra, power_before=round(b.power_after, 2),
+                           power_after=round(r.power_after, 2), power_change=round(r.power_after - b.power_after, 2),
+                           power_rank_before=int(b.power_rank_after), power_rank_after=int(r.power_rank_after),
+                           rank_change=int(r.power_rank_after - b.power_rank_after), amber_before=round(b.amber_after, 2),
+                           amber_after=round(r.amber_after, 2), band_before=b.band_after, band_after=r.band_after,
+                           firefighters=round(r.firefighters), crew_demand=r.crew_demand, committed_share=round(r.committed_share, 4),
+                           unmet_demand=round(r.unmet_demand)))
+    rows.sort(key=lambda x: x.power_rank_after)
+    return SimulateResponse(year=d.year, date=d.isoformat(), rows=rows)
 
 
 class AssistanceRequest(BaseModel):
