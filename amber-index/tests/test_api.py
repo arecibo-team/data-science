@@ -146,3 +146,41 @@ def test_simulate_unknown_country(client):
 
 def test_simulate_needs_events(client):
     assert client.post("/simulate", json={"shocks": [{"iso2": "RO"}]}).status_code == 422
+
+
+def test_optimize_with_explicit_need(client):
+    r = client.post("/optimize/assistance", json={"recipient": "PT", "need": 1500})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["covered"] + body["shortfall"] == pytest.approx(1500, abs=1)
+    assert all(d["iso2"] != "PT" for d in body["donors"])
+    assert all(d["share_of_need"] <= 0.4 + 1e-6 for d in body["donors"])
+    assert sum(d["sent"] for d in body["donors"]) == body["covered"]
+    assert all(d["sent"] >= 20 for d in body["donors"])
+
+
+def test_optimize_need_from_shock(client):
+    body = {"recipient": "CY", "shocks": [{"iso2": "CY", "preset": "multi_hazard"}]}
+    r = client.post("/optimize/assistance", json=body)
+    assert r.status_code == 200 and r.json()["need"] > 0 and r.json()["covered"] > 0
+
+
+def test_optimize_location_weight_moves_donors_closer(client):
+    far = client.post("/optimize/assistance", json={"recipient": "GR", "need": 2000, "weight_location": 0.0}).json()
+    near = client.post("/optimize/assistance", json={"recipient": "GR", "need": 2000, "weight_location": 1.0}).json()
+    assert near["mean_distance_km"] <= far["mean_distance_km"]
+
+
+def test_optimize_shocked_donor_gives_less(client):
+    calm = client.post("/optimize/assistance", json={"recipient": "GR", "need": 3000}).json()
+    top = calm["donors"][0]["iso2"]
+    shocked = client.post("/optimize/assistance", json={"recipient": "GR", "need": 3000,
+                          "shocks": [{"iso2": top, "preset": "multi_hazard"}]}).json()
+    before = calm["donors"][0]["sent"]
+    after = next((d["sent"] for d in shocked["donors"] if d["iso2"] == top), 0)
+    assert after <= before
+
+
+def test_optimize_validation(client):
+    assert client.post("/optimize/assistance", json={"recipient": "PT"}).status_code == 422
+    assert client.post("/optimize/assistance", json={"recipient": "XX", "need": 10}).status_code == 404

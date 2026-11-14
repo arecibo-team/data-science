@@ -30,6 +30,14 @@ of the national workforce that demand consumes (capped at 95%; the rest is repor
 multi-hazard emergency (Red flood, Red wildfire, Orange earthquake) drops the three strongest countries by 4 to 11 places;
 Cyprus, the smallest service, is left with about 3,200 firefighters of unmet demand.
 
+**Assistance optimizer.** When a country needs firefighters it cannot cover, an integer program splits the request
+across the other 26 countries. Each donor can send at most 5% of its workforce, reduced by its own hazard pressure and
+by crews tied up in its own emergencies; donors with power below 20 send none; nobody covers more than 40% of the
+request; a donor sends at least a team of 20 or nothing. Each firefighter costs
+`w · distance / max distance + (1 − w) · (1 − power / 100)`, so `w` trades **location** (distance from the donor's
+centroid to the incident) against **power** (prefer donors with capacity to spare). With `w = 1` help for Portugal
+comes from France, Italy and Ireland; with `w = 0` from Poland, Germany and Czechia.
+
 ## Run the notebook
 
 ```sh
@@ -66,6 +74,10 @@ curl -X POST localhost:8000/score/custom-weights -H 'Content-Type: application/j
   -d '{"year": 2024, "danger": 2, "workforce": 1, "capability": 1}'
 curl -X POST localhost:8000/simulate -H 'Content-Type: application/json' \
   -d '{"shocks": [{"iso2": "CZ", "preset": "multi_hazard"}, {"iso2": "CY", "events": [{"type": "WF", "alert": "Red", "count": 1}]}]}'
+curl -X POST localhost:8000/optimize/assistance -H 'Content-Type: application/json' \
+  -d '{"recipient": "CY", "shocks": [{"iso2": "CY", "preset": "multi_hazard"}], "weight_location": 0.5}'
+curl -X POST localhost:8000/optimize/assistance -H 'Content-Type: application/json' \
+  -d '{"recipient": "PT", "need": 3000, "incident_lat": 40.1, "incident_lon": -8.0, "weight_location": 1}'
 ```
 
 | Endpoint | Returns |
@@ -78,6 +90,7 @@ curl -X POST localhost:8000/simulate -H 'Content-Type: application/json' \
 | `POST /score/custom-weights` | pillar weights → recomputed scores and bands (for weight sliders) |
 | `GET /simulate/presets` | named hazard shocks (major flood, earthquake, wildfire season, drought, multi-hazard) |
 | `POST /simulate` | force hazards on countries → power, ranks, crew demand and unmet demand before and after |
+| `POST /optimize/assistance` | recipient + need (or shocks that create one) → which countries send how many firefighters |
 
 Tests: `.venv/bin/python -m pytest`.
 
@@ -100,5 +113,8 @@ forecast (next year = this year) as a reference. Rows are never shuffled.
   alerts) and its flood and wildfire alerting expanded over the years. Green alerts are down-weighted for that reason.
 - **Burned area covers wildfires, not building fires**, and only fires large enough for satellites (GWIS).
 - Fire-protection spending (COFOG GF0302) covers all fire services, not only wildfire.
+- Crew demand per event (Green 50, Orange 500, Red 2,000), the 5% deployable share and the 40% cap are planning
+  assumptions, not measured values; the API lets you change all of them except the demand table.
+- Distances are straight lines between country centroids (or to a given incident point), not travel times.
 - With 27 countries and about ten years, the model has a few hundred rows; its weights are a guide, which is why the
   final weights blend 50% model and 50% equal.

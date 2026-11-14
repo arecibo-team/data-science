@@ -293,6 +293,14 @@ def load_volunteers() -> pd.DataFrame:
     return pd.read_csv(path, dtype={"iso2": str})
 
 
+def country_centroids(boundaries) -> pd.DataFrame:
+    parts = boundaries.explode(index_parts=False)
+    parts["area"] = parts.to_crs(3035).area
+    main = parts.sort_values("area").groupby("iso2").tail(1)
+    pts = main.geometry.representative_point()
+    return pd.DataFrame({"iso2": main["iso2"].to_numpy(), "lat": pts.y.to_numpy(), "lon": pts.x.to_numpy()}).set_index("iso2")
+
+
 def load_boundaries(refresh: bool = False):
     import geopandas as gpd
     raw = _cached_bytes(RAW_DIR / "gisco_countries_20m.geojson", SOURCES["boundaries"], refresh)

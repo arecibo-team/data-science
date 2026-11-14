@@ -20,6 +20,7 @@ from amber import ARTIFACTS_DIR, NAMES
 from amber.features import FEATURES, PILLARS, compute_rates
 from amber.model import load_artifacts
 from amber.power import power_index
+from amber.optimize import AssistanceParams, donor_table, optimize_assistance
 from amber.simulate import PRESETS, run_scenario
 from amber.scoring import amber_score, band, contributions, gap, pillar_scores, reason_text
 
@@ -337,3 +338,84 @@ def simulate(body: SimulateRequest):
                    crew_demand=r.crew_demand, committed_share=round(r.committed_share, 4),
                    unmet_demand=round(r.unmet_demand)) for i, r in res.iterrows()]
     return SimulateResponse(year=y, rows=rows)
+
+
+class AssistanceRequest(BaseModel):
+    recipient: str
+    year: int | None = None
+    need: float | None = Field(None, gt=0, description="Firefighters requested; defaults to the recipient's unmet demand after the shocks")
+    shocks: list[Shock] = []
+    incident_lat: float | None = Field(None, ge=-90, le=90)
+    incident_lon: float | None = Field(None, ge=-180, le=180)
+    weight_location: float = Field(0.5, ge=0, le=1, description="1 = only distance matters, 0 = only donor power matters")
+    deploy_share: float = Field(0.05, gt=0, le=0.5)
+    max_share_per_donor: float = Field(0.4, gt=0, le=1)
+    min_power: float = Field(20.0, ge=0, le=100)
+    max_distance_km: float | None = Field(None, gt=0)
+    min_team: int = Field(20, ge=1, le=500, description="A donor sends at least this many firefighters, or none")
+
+    @model_validator(mode="after")
+    def need_or_shocks(self):
+        if self.need is None and not self.shocks:
+            raise ValueError("give a need or shocks that create one")
+        if (self.incident_lat is None) != (self.incident_lon is None):
+            raise ValueError("give both incident_lat and incident_lon")
+        return self
+
+
+class Donation(BaseModel):
+    iso2: str
+    name: str
+    sent: int
+    share_of_need: float
+    share_of_own_crews: float
+    distance_km: float
+    power_before: float
+    power_after: float
+
+
+class AssistanceResponse(BaseModel):
+    year: int
+    recipient: str
+    need: float
+    covered: int
+    shortfall: float
+    mean_distance_km: float | None
+    available_capacity: float
+    incident: list[float]
+    donors: list[Donation]
+
+
+def _shock_dict(shocks: list[Shock]) -> dict:
+    out = {}
+    for sh in shocks:
+        iso2 = sh.iso2.upper().replace("EL", "GR")
+        if iso2 not in NAMES:
+            raise HTTPException(404, f"Unknown country '{iso2}'")
+        out[iso2] = out.get(iso2, []) + list(PRESETS.get(sh.preset, [])) + [(e.type, e.alert, e.count) for e in sh.events]
+    return out
+
+
+@app.post("/optimize/assistance", response_model=AssistanceResponse)
+def optimize(body: AssistanceRequest):
+    y = _year(body.year)
+    recipient = body.recipient.upper().replace("EL", "GR")
+    if recipient not in NAMES:
+        raise HTTPException(404, f"Unknown country '{recipient}'")
+    scen = run_scenario(_raw_table(y), _shock_dict(body.shocks), STATE["preprocessor"], STATE["features"],
+                        STATE["final_weights"], STATE["scale"], STATE["metadata"].get("alpha", 0.5), y)
+    need = body.need if body.need is not None else float(scen.loc[recipient, "unmet_demand"])
+    if need <= 0:
+        raise HTTPException(422, f"{NAMES[recipient]} can cover this demand itself; pass an explicit need to plan anyway")
+    cent = pd.DataFrame(STATE["metadata"]["centroids"], index=["lat", "lon"]).T
+    params = AssistanceParams(weight_location=body.weight_location, deploy_share=body.deploy_share,
+                              max_share_per_donor=body.max_share_per_donor, min_power=body.min_power,
+                              max_distance_km=body.max_distance_km, min_team=body.min_team)
+    incident = (body.incident_lat, body.incident_lon) if body.incident_lat is not None else None
+    plan, info = optimize_assistance(donor_table(scen, cent), recipient, need, incident, params)
+    donors = [Donation(iso2=i, name=NAMES[i], sent=int(r.sent), share_of_need=round(r.share_of_need, 4),
+                       share_of_own_crews=round(r.share_of_own_crews, 4), distance_km=round(r.distance_km, 1),
+                       power_before=round(r.power, 2), power_after=round(r.power_after, 2)) for i, r in plan.iterrows()]
+    return AssistanceResponse(year=y, recipient=recipient, need=round(need, 1), covered=info["covered"],
+                              shortfall=round(info["shortfall"], 1), mean_distance_km=info["mean_distance_km"],
+                              available_capacity=round(info["available_capacity"], 1), incident=info["incident"], donors=donors)

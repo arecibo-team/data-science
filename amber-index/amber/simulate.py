@@ -67,6 +67,7 @@ def run_scenario(raw: pd.DataFrame, shocks: dict, preprocessor, features: list[s
         "power_rank_before": before["power_rank"], "power_rank_after": after["power_rank"],
         "amber_before": before["amber"], "amber_after": after["amber"],
         "band_before": before["band"], "band_after": after["band"],
+        "hazard_pressure_after": after["hazard_pressure"],
         "firefighters": crews, "crew_demand": demand, "committed_share": committed,
         "unmet_demand": (demand - crews * MAX_COMMITTED).clip(lower=0),
     }, index=before.index)
