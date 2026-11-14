@@ -175,7 +175,25 @@ def test_match_params_validation():
 
 # ---------- export ----------
 
-def test_export_writes_index_and_day_files(tmp_path):
+def _decode_month(path):
+    """Read a month file the way the web loader does, returning columns and the header."""
+    import gzip
+    import struct
+    from firms.export import COLUMNS
+
+    raw = gzip.decompress(path.read_bytes())
+    (hlen,) = struct.unpack_from("<I", raw, 0)
+    header = json.loads(raw[4:4 + hlen])
+    n, off, cols = header["n"], 4 + hlen, {}
+    for name, dt in COLUMNS:
+        size = np.dtype(dt).itemsize * n
+        cols[name] = np.frombuffer(raw[off:off + size], dtype=dt)
+        off += size
+    assert off == len(raw)  # no trailing bytes
+    return header, cols
+
+
+def test_export_writes_index_month_grid_and_incident_files(tmp_path):
     df = pd.DataFrame([
         _det("MODIS", 10.0, 20.0, "2025-08-01 10:00"),
         _det("VIIRS", 10.0, 20.0, "2025-08-01 10:10"),
@@ -192,12 +210,45 @@ def test_export_writes_index_and_day_files(tmp_path):
     df["source"] = "s"
     index = export_web(df, out_dir=tmp_path)
     assert index["days"]["2025-08-01"] == {"total": 2, "MODIS": 1, "VIIRS": 1, "matched": 2, "confirmed": 0}
-    day2 = json.loads((tmp_path / "days" / "2025-08-02.json").read_text())
-    assert "bt_mid_k" in day2["fields"] and len(day2["rows"][0]) == len(day2["fields"])
-    row = dict(zip(day2["fields"], day2["rows"][0]))
-    assert row["cluster_id"] is None  # unmatched cluster_id -> null
-    assert row["status"] == "viirs_only"
-    assert row["incident"] is None  # no incidents supplied -> unconfirmed
+    assert index["months"]["2025-08"]["days"] == ["2025-08-01", "2025-08-02"]
+    assert index["enums"]["status"][index["enums"]["status"].index("viirs_only")] == "viirs_only"
+
+    header, cols = _decode_month(tmp_path / "months" / "2025-08.bin.gz")
+    enums = index["enums"]
+    assert header["n"] == 3 and header["incidents"] == []
+    assert [enums["sensor"][c] for c in cols["sensor"]] == ["MODIS", "VIIRS", "VIIRS"]
+    assert [enums["platform"][c] for c in cols["platform"]] == ["Terra", "SNPP", "NOAA-21"]
+    assert [enums["status"][c] for c in cols["status"]] == ["both", "both", "viirs_only"]
+    assert cols["minute"].tolist() == [600, 610, 60]  # minutes since midnight, UTC
+    assert cols["day"].tolist() == [1, 1, 2]
+    assert cols["cluster"].tolist() == [0, 0, -1]  # unmatched cluster -> -1
+    assert np.isnan(cols["bt"][2]) and cols["bt"][0] == np.float32(330.0)
+    assert cols["incident"].tolist() == [0, 0, 0]  # no incidents supplied -> unconfirmed
+
+    import gzip
+    grid = json.loads(gzip.decompress((tmp_path / "grid" / "2025-08.json.gz").read_bytes()))
+    assert sorted(grid["days"]) == ["2025-08-01", "2025-08-02"]
+    # Cell (row, col) of (lat 10, lon 20) at 1 degree: row 100, col 200.
+    assert [100, 200, 1, 1, 0, 0] in grid["days"]["2025-08-01"]
+
+
+def test_export_confirmed_detection_gets_incident_code(tmp_path):
+    df = pd.DataFrame([_det("MODIS", 10.0, 20.0, "2025-08-01 10:00")])
+    df["platform"] = "Terra"
+    df["bt_mid_k"] = 330.0
+    df["confidence_class"] = "high"
+    df["daynight"] = "D"
+    df["cluster_id"] = 0
+    df["harmonized_status"] = "modis_only"
+    df["uid"] = "a"
+    df["firms_version"] = "x"
+    df["source"] = "s"
+    df["incident_id"] = "effis-42"
+    export_web(df, out_dir=tmp_path)
+    header, cols = _decode_month(tmp_path / "months" / "2025-08.bin.gz")
+    assert header["incidents"] == ["effis-42"]
+    assert cols["incident"].tolist() == [1]  # 1-based position in the month's table
+    assert not (tmp_path / "days").exists() and not (tmp_path / "incident-days").exists()
 
 
 def _write(path, text):

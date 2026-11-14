@@ -1,39 +1,42 @@
-import type { Confidence } from "../types";
-
-export type StatusFilter = "all" | "both" | "single";
-export type ConfFilter = "all" | Confidence;
-export type LayerKey = "MODIS" | "VIIRS" | "COMMON" | "INCIDENTS";
-
-export interface Filters {
-  from: string;
-  to: string;
-  /** Each layer toggles independently. A detection is drawn if any enabled layer includes it. */
-  layers: Record<LayerKey, boolean>;
-  confidence: ConfFilter;
-  status: StatusFilter;
-}
+import { type ConfFilter, type Filters, type LayerCounts, type LayerKey, type Mode, type StatusFilter } from "../model";
 
 interface Props {
   dates: string[];
   filters: Filters;
   onChange: (f: Filters) => void;
   /** Counts within the selected date range, shown next to each layer. */
-  counts: Record<LayerKey, number>;
-  stats: { total: number; matched: number };
-  /** Day files finished so far while a new range loads; null when idle. */
+  counts: LayerCounts;
+  /** Visible detections and how many are matched by both sensors. Null in grid view. */
+  stats: { total: number; matched: number } | null;
+  /** Files finished so far while a new range loads; null when idle. */
   progress: { done: number; total: number } | null;
 }
 
 export function Controls({ dates, filters, onChange, counts, stats, progress }: Props) {
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch });
   const setLayer = (key: LayerKey, on: boolean) => set({ layers: { ...filters.layers, [key]: on } });
+  const grid = filters.view === "grid";
 
   // Any range is allowed. Keep it ordered by pulling the other end along if needed.
   const setFrom = (from: string) => set({ from, to: filters.to < from ? from : filters.to });
   const setTo = (to: string) => set({ to, from: filters.from > to ? to : filters.from });
+  const setView = (view: Mode) => set({ view });
 
   return (
     <div className="controls">
+      <fieldset>
+        <legend>View</legend>
+        <select value={filters.view} onChange={(e) => setView(e.target.value as Mode)}>
+          <option value="points">Points (single detections)</option>
+          <option value="grid">Grid (1° cell counts)</option>
+        </select>
+        <p className="muted small">
+          {grid
+            ? "Grid counts per cell. Fast for long ranges. Confidence and cross-sensor filters need the points view."
+            : "Every detection as a point. Long ranges take longer to draw."}
+        </p>
+      </fieldset>
+
       <fieldset>
         <legend>Date range (UTC)</legend>
         <label>
@@ -96,26 +99,38 @@ export function Controls({ dates, filters, onChange, counts, stats, progress }: 
 
       <fieldset>
         <legend>Confidence</legend>
-        <select value={filters.confidence} onChange={(e) => set({ confidence: e.target.value as ConfFilter })}>
+        <select
+          value={filters.confidence}
+          disabled={grid}
+          onChange={(e) => set({ confidence: e.target.value as ConfFilter })}
+        >
           <option value="all">All</option>
           <option value="high">High</option>
           <option value="nominal">Nominal and high</option>
           <option value="low">Low only</option>
         </select>
         <p className="muted small">
-          Nominal and high include detections at nominal or high confidence. Low only selects low.
+          {grid
+            ? "Available in the points view."
+            : "Nominal and high include detections at nominal or high confidence. Low only selects low."}
         </p>
       </fieldset>
 
       <fieldset>
         <legend>Cross-sensor match</legend>
-        <select value={filters.status} onChange={(e) => set({ status: e.target.value as StatusFilter })}>
+        <select
+          value={filters.status}
+          disabled={grid}
+          onChange={(e) => set({ status: e.target.value as StatusFilter })}
+        >
           <option value="all">All detections</option>
           <option value="both">Matched by both sensors</option>
           <option value="single">Single-sensor only</option>
         </select>
         <p className="muted small">
-          {stats.matched.toLocaleString()} of {stats.total.toLocaleString()} shown are matched by both sensors.
+          {stats
+            ? `${stats.matched.toLocaleString()} of ${stats.total.toLocaleString()} shown are matched by both sensors.`
+            : "Available in the points view."}
         </p>
       </fieldset>
     </div>

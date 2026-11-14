@@ -1,13 +1,17 @@
 import { useEffect } from "react";
 import { MapContainer, TileLayer, useMap } from "react-leaflet";
 import L from "leaflet";
-import { CanvasPointLayer } from "./PointLayer";
-import type { IncidentFeature, Point } from "../types";
+import { CanvasPointLayer, SENSOR_COLOR } from "./PointLayer";
+import type { GridCell, VisibleSet } from "../model";
+import type { IncidentFeature } from "../types";
 
 interface Props {
-  points: Point[];
+  /** Individual detections (short ranges). Null when the grid is shown instead. */
+  visible: VisibleSet | null;
+  /** Grid cells of counts (long ranges). Null when individual detections are shown. */
+  cells: GridCell[] | null;
   incidents: IncidentFeature[];
-  onPick: (p: Point | null) => void;
+  onPick: (i: number | null) => void;
   fitKey: string;
 }
 
@@ -15,6 +19,8 @@ const INCIDENT_STYLE = {
   EFFIS: { color: "#dc2626", fillColor: "#dc2626" }, // red: EFFIS burnt-area perimeters
   "Copernicus EMS": { color: "#7c3aed", fillColor: "#7c3aed" }, // violet: EMS mapping areas
 } as const;
+
+const CONFIRMED_RING = "#dc2626";
 
 /** Outline + translucent fill for each incident, with a popup describing it. */
 function IncidentsOverlay({ incidents }: Pick<Props, "incidents">) {
@@ -50,32 +56,80 @@ function IncidentsOverlay({ incidents }: Pick<Props, "incidents">) {
   return null;
 }
 
-function PointsOverlay({ points, onPick }: Pick<Props, "points" | "onPick">) {
+function PointsOverlay({ visible, onPick }: Pick<Props, "visible" | "onPick">) {
   const map = useMap();
   useEffect(() => {
-    const layer = new CanvasPointLayer(points, onPick);
+    if (!visible) return;
+    const layer = new CanvasPointLayer(visible, onPick);
     layer.addTo(map);
     return () => {
       layer.remove();
     };
-  }, [map, points, onPick]);
+  }, [map, visible, onPick]);
+  return null;
+}
+
+/** Grid cells, sized by count. Red ring: at least one confirmed detection in the cell. */
+function GridOverlay({ cells }: Pick<Props, "cells">) {
+  const map = useMap();
+  useEffect(() => {
+    if (!cells) return;
+    const group = L.layerGroup();
+    for (const c of cells) {
+      const modisDominant = c.modis >= c.viirs;
+      const fill = modisDominant ? SENSOR_COLOR.MODIS : SENSOR_COLOR.VIIRS;
+      L.circleMarker([c.lat, c.lon], {
+        radius: Math.min(18, 3 + 2.5 * Math.log10(c.count + 1)),
+        color: c.confirmed > 0 ? CONFIRMED_RING : fill,
+        weight: c.confirmed > 0 ? 1.5 : 1,
+        fillColor: fill,
+        fillOpacity: 0.7,
+      })
+        .bindPopup(() => {
+          const box = document.createElement("div");
+          const lines = [
+            `${c.count.toLocaleString()} detections`,
+            `MODIS ${c.modis.toLocaleString()} · VIIRS ${c.viirs.toLocaleString()}`,
+            `Confirmed ${c.confirmed.toLocaleString()}`,
+            `${c.lat.toFixed(1)}, ${c.lon.toFixed(1)} (1° cell)`,
+          ];
+          for (const line of lines) {
+            const row = document.createElement("div");
+            row.textContent = line;
+            box.append(row);
+          }
+          return box;
+        })
+        .addTo(group);
+    }
+    group.addTo(map);
+    return () => {
+      group.remove();
+    };
+  }, [map, cells]);
   return null;
 }
 
 /** Zoom to the data whenever the loaded dataset changes. */
-function FitToPoints({ points, fitKey }: Props) {
+function FitToData({ visible, cells, fitKey }: Pick<Props, "visible" | "cells" | "fitKey">) {
   const map = useMap();
   useEffect(() => {
-    if (points.length === 0) return;
     let s = 90, n = -90, w = 180, e = -180;
-    for (const p of points) {
-      if (p.lat < s) s = p.lat;
-      if (p.lat > n) n = p.lat;
-      if (p.lon < w) w = p.lon;
-      if (p.lon > e) e = p.lon;
+    const add = (lat: number, lon: number) => {
+      if (lat < s) s = lat;
+      if (lat > n) n = lat;
+      if (lon < w) w = lon;
+      if (lon > e) e = lon;
+    };
+    if (visible && visible.count > 0) {
+      for (let i = 0; i < visible.count; i++) add(visible.lat[i], visible.lon[i]);
+    } else if (cells && cells.length > 0) {
+      for (const c of cells) add(c.lat, c.lon);
+    } else {
+      return;
     }
     map.fitBounds(L.latLngBounds([s, w], [n, e]), { padding: [24, 24], maxZoom: 9 });
-    // Re-run only when the selected dataset changes, not on every filter toggle.
+    // Re-run only when the loaded dataset changes, not on every filter toggle.
   }, [map, fitKey]);
   return null;
 }
@@ -88,8 +142,9 @@ export function MapView(props: Props) {
         attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
       />
       <IncidentsOverlay incidents={props.incidents} />
-      <PointsOverlay points={props.points} onPick={props.onPick} />
-      <FitToPoints {...props} />
+      <PointsOverlay visible={props.visible} onPick={props.onPick} />
+      <GridOverlay cells={props.cells} />
+      <FitToData visible={props.visible} cells={props.cells} fitKey={props.fitKey} />
     </MapContainer>
   );
 }

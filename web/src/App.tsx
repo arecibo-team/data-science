@@ -1,21 +1,30 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { loadDay, loadIncidentDay, loadIndex, mapLimit } from "./data";
+import { loadGrid, loadIncidents, loadIndex, loadMonth, mapLimit, pointAt, pruneCaches } from "./data";
 import { MapView } from "./components/MapView";
-import { Controls, type Filters, type LayerKey } from "./components/Controls";
+import { Controls } from "./components/Controls";
 import { SENSOR_COLOR } from "./components/PointLayer";
-import type { Index, IncidentFeature, IncidentProperties, Point } from "./types";
+import { aggregateGrid, scanMonths, type Filters, type LayerCounts, type Mode } from "./model";
+import type { GridMonth, Index, IncidentFeature, IncidentProperties, MonthData, Point } from "./types";
+
+const NO_COUNTS: LayerCounts = { MODIS: 0, VIIRS: 0, COMMON: 0, INCIDENTS: 0 };
 
 export default function App() {
   const [index, setIndex] = useState<Index | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters | null>(null);
-  const [points, setPoints] = useState<Point[]>([]);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [selected, setSelected] = useState<Point | null>(null);
+  const [months, setMonths] = useState<MonthData[]>([]);
+  const [grids, setGrids] = useState<GridMonth[]>([]);
   const [incidents, setIncidents] = useState<IncidentFeature[]>([]);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [dataVersion, setDataVersion] = useState(0);
+  const [selected, setSelected] = useState<Point | null>(null);
 
   const dates = useMemo(() => (index ? Object.keys(index.days).sort() : []), [index]);
+  const from = filters?.from ?? "";
+  const to = filters?.to ?? "";
+  const mode: Mode = filters?.view ?? "points";
 
+  // Startup: index, then the European incidents (loaded once for the whole archive).
   useEffect(() => {
     loadIndex()
       .then((idx) => {
@@ -25,6 +34,7 @@ export default function App() {
         setFilters({
           from: all[0],
           to: all[Math.min(2, all.length - 1)],
+          view: "points",
           layers: { MODIS: true, VIIRS: true, COMMON: true, INCIDENTS: true },
           confidence: "all",
           status: "all",
@@ -33,81 +43,104 @@ export default function App() {
       .catch((e: Error) => setError(e.message));
   }, []);
 
-  // Load the detections and European incidents for each day in the selected range.
-  // Progress counts day files finished, across both kinds of file.
-  const rangeKey = filters ? `${filters.from}|${filters.to}` : "";
   useEffect(() => {
-    if (!filters || !index) return;
-    const days = dates.filter((d) => d >= filters.from && d <= filters.to);
+    if (!index) return;
+    loadIncidents(index.incidents.file)
+      .then(setIncidents)
+      .catch((e: Error) => setError(`Incidents: ${e.message}`));
+  }, [index]);
+
+  // Load the months (or per-month grids) that overlap the range. Layer toggles do not reload.
+  useEffect(() => {
+    if (!index || !from) return;
+    const infos = Object.entries(index.months)
+      .filter(([, info]) => info.days.some((d) => d >= from && d <= to))
+      .sort(([a], [b]) => a.localeCompare(b));
     let cancelled = false;
     let done = 0;
-    const total = days.length * 2;
+    const total = infos.length;
     setError(null);
     setProgress(total ? { done: 0, total } : null);
     const tick = () => {
       done++;
       if (!cancelled) setProgress({ done, total });
     };
-    // Three days at a time (six files in flight): loading every day at once drops connections.
-    mapLimit(days, 3, (d) =>
-      Promise.all([
-        loadDay(d).then((pts) => (tick(), pts)),
-        loadIncidentDay(d, index.incidents.dir).then((inc) => (tick(), inc)),
-      ]),
-    )
-      .then((parts) => {
+
+    const load = async () => {
+      if (mode === "grid") {
+        const gs = await mapLimit(infos, 4, async ([m, info]) => {
+          const g = await loadGrid(m, info.grid);
+          tick();
+          return g;
+        });
         if (cancelled) return;
-        setPoints(parts.flatMap(([pts]) => pts));
-        // A fire spanning several days appears in each day file; keep one copy.
-        const byId = new Map<string, IncidentFeature>();
-        for (const [, inc] of parts) for (const f of inc.features) byId.set(f.properties.incident_id, f);
-        setIncidents([...byId.values()]);
-      })
+        setGrids(gs);
+        setMonths([]);
+      } else {
+        const ms = await mapLimit(infos, 4, async ([m, info]) => {
+          const d = await loadMonth(m, info.file);
+          tick();
+          return d;
+        });
+        if (cancelled) return;
+        setMonths(ms);
+        setGrids([]);
+      }
+      pruneCaches(new Set(infos.map(([m]) => m)));
+      setDataVersion((v) => v + 1);
+    };
+
+    load()
       .catch((e: Error) => !cancelled && setError(e.message))
       .finally(() => !cancelled && setProgress(null));
     return () => {
       cancelled = true;
     };
-    // filters.from/to are captured via rangeKey; dates is stable after index loads.
-  }, [rangeKey, dates, index]);
+  }, [index, from, to, mode]);
+
+  const enums = index?.enums;
+
+  // Points mode: one pass over the loaded months with all filters applied.
+  const scan = useMemo(
+    () => (filters && enums && mode === "points" ? scanMonths(months, enums, filters) : null),
+    [filters, enums, months, mode],
+  );
+
+  // Grid mode: per-cell counts over the range, with the layer toggles applied.
+  const agg = useMemo(
+    () => (filters && index && mode === "grid" ? aggregateGrid(grids, index.grid_cell_deg, filters) : null),
+    [filters, index, grids, mode],
+  );
+
+  // Incidents overlapping the selected range.
+  const rangeIncidents = useMemo(
+    () => incidents.filter((f) => f.properties.start_date <= to && f.properties.end_date >= from),
+    [incidents, from, to],
+  );
+
+  const counts: LayerCounts = useMemo(
+    () => ({ ...(scan?.counts ?? agg?.counts ?? NO_COUNTS), INCIDENTS: rangeIncidents.length }),
+    [scan, agg, rangeIncidents],
+  );
+
+  const stats = scan ? { total: scan.total, matched: scan.matched } : null;
+  const showIncidents = filters?.layers.INCIDENTS ? rangeIncidents : [];
 
   const incidentById = useMemo(
     () => new Map(incidents.map((f) => [f.properties.incident_id, f.properties])),
     [incidents],
   );
 
-  // A detection is drawn when any enabled layer contains it: its sensor layer, or COMMON if confirmed.
-  const inLayer = (p: Point, layers: Filters["layers"]) =>
-    layers[p.sensor] || (layers.COMMON && p.incident !== null);
-
-  const visible = useMemo(() => {
-    if (!filters) return [];
-    return points.filter((p) => {
-      if (!inLayer(p, filters.layers)) return false;
-      if (filters.confidence === "high" && p.confidence !== "high") return false;
-      if (filters.confidence === "nominal" && p.confidence === "low") return false;
-      if (filters.confidence === "low" && p.confidence !== "low") return false;
-      if (filters.status === "both" && p.status !== "both") return false;
-      if (filters.status === "single" && p.status === "both") return false;
-      return true;
-    });
-  }, [points, filters]);
-
-  // Per-layer counts for the selected range, independent of the layer toggles.
-  const counts = useMemo(() => {
-    const c: Record<LayerKey, number> = { MODIS: 0, VIIRS: 0, COMMON: 0, INCIDENTS: incidents.length };
-    let matched = 0;
-    for (const p of points) {
-      c[p.sensor]++;
-      if (p.incident) c.COMMON++;
-      if (p.status === "both") matched++;
-    }
-    return { counts: c, matched };
-  }, [points, incidents]);
-
-  const stats = { total: visible.length, matched: counts.matched };
-
-  const onPick = useCallback((p: Point | null) => setSelected(p), []);
+  const onPick = useCallback(
+    (i: number | null) => {
+      if (i === null || !scan || !enums) {
+        setSelected(null);
+        return;
+      }
+      setSelected(pointAt(months[scan.visible.chunk[i]], scan.visible.row[i], enums));
+    },
+    [scan, months, enums],
+  );
 
   if (error && !filters) {
     return <main className="page"><h1>FIRMS hotspots</h1><p className="error">{error}</p></main>;
@@ -127,7 +160,7 @@ export default function App() {
           dates={dates}
           filters={filters}
           onChange={setFilters}
-          counts={counts.counts}
+          counts={counts}
           stats={stats}
           progress={progress}
         />
@@ -166,10 +199,11 @@ export default function App() {
 
       <main className="map-wrap">
         <MapView
-          points={visible}
-          incidents={filters.layers.INCIDENTS ? incidents : []}
+          visible={scan?.visible ?? null}
+          cells={agg?.cells ?? null}
+          incidents={showIncidents}
           onPick={onPick}
-          fitKey={`${rangeKey}:${points.length}`}
+          fitKey={`${from}|${to}|${dataVersion}`}
         />
       </main>
     </div>
