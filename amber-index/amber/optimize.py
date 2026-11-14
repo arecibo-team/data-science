@@ -32,7 +32,8 @@ def donor_table(scenario: pd.DataFrame, centroids: pd.DataFrame) -> pd.DataFrame
 
 def donor_capacity(table: pd.DataFrame, params: AssistanceParams) -> pd.Series:
     committed = table.get("committed_share", pd.Series(0.0, index=table.index)).fillna(0)
-    cap = table["firefighters"] * params.deploy_share * (1 - table["hazard_pressure"].clip(0, 1)) * (1 - committed)
+    spare = (params.deploy_share - committed).clip(lower=0)
+    cap = table["firefighters"] * spare * (1 - table["hazard_pressure"].clip(0, 1))
     return cap.where(table["power"] >= params.min_power, 0.0).clip(lower=0)
 
 

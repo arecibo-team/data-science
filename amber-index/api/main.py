@@ -253,7 +253,7 @@ def score_one(iso2: str, year: int | None = None):
     x = pd.Series(row["features"])[STATE["features"]]
     pts = contributions(x, STATE["reference"], STATE["final_weights"], STATE["scale"])
     top = pts.reindex(pts.abs().sort_values(ascending=False).index)[:3]
-    reasons = [Reason(feature=f, points=round(float(p), 1), text=reason_text(f, float(p), float(x[f]))) for f, p in top.items()]
+    reasons = [Reason(feature=f, points=round(float(p), 1), text=reason_text(f, float(p), float(x[f]), float(STATE["reference"][f]))) for f, p in top.items()]
     return ScoreDetail(**_score(row), reasons=reasons)
 
 
@@ -445,7 +445,7 @@ def optimize(body: AssistanceRequest):
         raise HTTPException(404, f"Unknown country '{recipient}'")
     scen = run_scenario(_raw_table(y), _shock_dict(body.shocks), STATE["preprocessor"], STATE["features"],
                         STATE["final_weights"], STATE["scale"], STATE["metadata"].get("alpha", 0.5), y)
-    need = body.need if body.need is not None else float(scen.loc[recipient, "unmet_demand"])
+    need = float(np.ceil(body.need if body.need is not None else scen.loc[recipient, "unmet_demand"]))
     if need <= 0:
         raise HTTPException(422, f"{NAMES[recipient]} can cover this demand itself; pass an explicit need to plan anyway")
     cent = pd.DataFrame(STATE["metadata"]["centroids"], index=["lat", "lon"]).T

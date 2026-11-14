@@ -123,10 +123,10 @@ REASON_PHRASES = {  # feature -> (phrase when the scaled value is high, phrase w
 }
 
 
-def reason_text(feature: str, points: float, value_scaled: float) -> str:
+def reason_text(feature: str, points: float, value_scaled: float, reference: float = 0.5) -> str:
     high, low = REASON_PHRASES[feature]
     direction = "up" if points > 0 else "down"
-    return f"{high if value_scaled >= 0.5 else low} pushes the score {direction} {abs(points):.0f} pts"
+    return f"{high if value_scaled >= reference else low} pushes the score {direction} {abs(points):.0f} pts"
 
 
 def label_archetypes(centers: pd.DataFrame) -> list[str]:
