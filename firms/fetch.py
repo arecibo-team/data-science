@@ -1,11 +1,14 @@
 """Download FIRMS hotspot CSVs (MODIS + VIIRS) for a bbox and date range.
 
-Each request covers <=10 days for one FIRMS source. Output is one raw CSV per
+Each request covers <=5 days for one FIRMS source. Output is one raw CSV per
 (source, window) under data/raw/<SOURCE>/<YYYYMMDD>_<days>.csv. Existing files are
 skipped, so runs are resumable.
 
 Example:
     python -m firms.fetch --start 2025-08-01 --end 2025-08-31 --bbox 15,-20,35,-5
+
+MAP_KEYs (KEY in .env, comma-separated) are used round-robin. A key that hits its
+transaction limit is cooled down for 10 minutes while the others keep working.
 """
 from __future__ import annotations
 
@@ -59,33 +62,84 @@ def _mask(text: str, keys: list[str]) -> str:
     return text[:200]
 
 
+COOLDOWN_S = 600  # FIRMS limits transactions per key per 10-minute window
+
+
+class KeyPool:
+    """Round-robin over MAP_KEYs. A key that hits its transaction limit cools down for
+    COOLDOWN_S; a key FIRMS rejects as invalid is removed. Keys are never logged."""
+
+    def __init__(self, keys: list[str]):
+        self.keys = list(keys)
+        self.cooldown_until: dict[str, float] = {}
+        self.dead: set[str] = set()
+        self._next = 0
+        self.uses: dict[str, int] = {k: 0 for k in self.keys}
+
+    def _usable(self) -> list[str]:
+        return [k for k in self.keys if k not in self.dead]
+
+    def acquire(self) -> str:
+        usable = self._usable()
+        if not usable:
+            raise FetchError("all MAP_KEYs were rejected as invalid")
+        while True:
+            now = time.monotonic()
+            n = len(usable)
+            for i in range(n):
+                key = usable[(self._next + i) % n]
+                if self.cooldown_until.get(key, 0.0) <= now:
+                    self._next = (self._next + i + 1) % n
+                    self.uses[key] += 1
+                    return key
+            wait = min(self.cooldown_until[k] for k in usable) - now
+            log.info("all keys at transaction limit; waiting %.0fs", wait)
+            time.sleep(max(1.0, wait))
+
+    def cool_down(self, key: str) -> None:
+        self.cooldown_until[key] = time.monotonic() + COOLDOWN_S
+        log.warning("key #%d hit transaction limit; cooling down %ds", self.keys.index(key) + 1, COOLDOWN_S)
+
+    def kill(self, key: str) -> None:
+        self.dead.add(key)
+        log.error("key #%d rejected as invalid; removed from rotation", self.keys.index(key) + 1)
+
+
 class FirmsClient:
-    """Thin HTTP client that rotates across MAP_KEYs when a key is rejected or over quota."""
+    """HTTP client that load-balances requests across MAP_KEYs."""
 
     def __init__(self, keys: list[str], session: requests.Session | None = None):
-        self.keys = keys
+        self.pool = KeyPool(keys)
         self.session = session or requests.Session()
 
-    def _get(self, path_after_key: str) -> tuple[int, str]:
-        last: tuple[int, str] | None = None
-        for attempt, key in enumerate(self.keys * 3):
+    def _get(self, path_after_key: str, max_attempts: int = 30) -> tuple[int, str]:
+        last = ""
+        for attempt in range(max_attempts):
+            key = self.pool.acquire()
             url = f"{C.API_BASE}/{path_after_key.format(key=key)}"
             try:
                 r = self.session.get(url, timeout=120)
             except requests.RequestException as exc:
                 log.warning("network error (%s); retrying", type(exc).__name__)
-                time.sleep(min(60, 2 ** attempt))
+                time.sleep(min(60, 2 ** min(attempt, 6)))
                 continue
             text = r.text
-            last = (r.status_code, _mask(text, self.keys))
-            if r.status_code == 200 and not text.lower().startswith(("invalid", "transaction", "unknown", "error")):
+            low = text.lower()
+            if r.status_code == 200 and not low.startswith(("invalid", "transaction", "unknown", "error", "exceeding")):
                 return r.status_code, text
-            if 400 <= r.status_code < 500 and r.status_code != 429:
-                # Client error (bad day range, bad source, bad key): retrying will not help.
-                raise FetchError(f"FIRMS rejected request ({r.status_code}): {last[1]}")
-            log.warning("FIRMS non-data response (%s): %s", r.status_code, last[1][:120])
-            time.sleep(min(60, 2 ** attempt))
-        raise FetchError(f"FIRMS request failed after retries: {last}")
+            last = f"HTTP {r.status_code}: {_mask(text, self.pool.keys)[:120]}"
+            if "transaction limit" in low or "exceeding allowed" in low or r.status_code == 429:
+                self.pool.cool_down(key)
+                continue
+            if "invalid" in low and "key" in low:
+                self.pool.kill(key)
+                continue
+            if 400 <= r.status_code < 500:
+                # Bad day range, bad source, etc. Retrying will not help.
+                raise FetchError(f"FIRMS rejected request ({r.status_code}): {_mask(text, self.pool.keys)[:200]}")
+            log.warning("FIRMS server error, retrying: %s", last)
+            time.sleep(min(60, 2 ** min(attempt, 6)))
+        raise FetchError(f"FIRMS request failed after {max_attempts} attempts: {last}")
 
     def availability(self, source: str) -> tuple[dt.date, dt.date] | None:
         """Return (min_date, max_date) for a source, or None if the source is not offered."""
@@ -170,6 +224,7 @@ def fetch_all(
         rows = max(0, text.count("\n") - 1)
         log.info("%-16s %s +%dd -> %d rows", req.source, req.start, req.days, rows)
         written.append(req.path)
+    log.info("requests per key: %s", {f"#{i+1}": client.pool.uses[k] for i, k in enumerate(client.pool.keys)})
     return written
 
 

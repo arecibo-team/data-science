@@ -201,3 +201,74 @@ def test_export_writes_index_and_day_files(tmp_path):
 def _write(path, text):
     path.write_text(text)
     return path
+
+
+# ---------- API key load balancing ----------
+
+class _Resp:
+    def __init__(self, status, text):
+        self.status_code = status
+        self.text = text
+
+
+class _FakeSession:
+    """Returns scripted responses per key, so the test sees which key was used."""
+
+    def __init__(self, script):
+        self.script = script  # key -> list of (status, text) responses
+        self.calls = []
+
+    def get(self, url, timeout=None):
+        key = url.split("/api/")[1].split("/")[2]  # .../api/<path>/<key>/...
+        self.calls.append(key)
+        status, text = self.script[key].pop(0)
+        return _Resp(status, text)
+
+
+CSV_OK = "latitude,longitude\n1,2\n"
+
+
+def test_round_robin_spreads_requests_across_keys(monkeypatch):
+    monkeypatch.setattr(fetch.time, "sleep", lambda s: None)
+    session = _FakeSession({
+        "k1": [(200, CSV_OK)], "k2": [(200, CSV_OK)], "k3": [(200, CSV_OK)],
+    })
+    client = fetch.FirmsClient(["k1", "k2", "k3"], session=session)
+    for _ in range(3):
+        client.area_csv("MODIS_NRT", "world", dt.date(2024, 1, 1), 5)
+    assert session.calls == ["k1", "k2", "k3"]
+
+
+def test_limit_error_cools_key_down_and_moves_to_next(monkeypatch):
+    monkeypatch.setattr(fetch.time, "sleep", lambda s: None)
+    session = _FakeSession({
+        "k1": [(400, "Exceeding allowed transaction limit.")],
+        "k2": [(200, CSV_OK)],
+    })
+    client = fetch.FirmsClient(["k1", "k2"], session=session)
+    text = client.area_csv("MODIS_NRT", "world", dt.date(2024, 1, 1), 5)
+    assert text == CSV_OK
+    assert session.calls == ["k1", "k2"]
+    assert "k1" in client.pool.cooldown_until and "k2" not in client.pool.cooldown_until
+
+
+def test_invalid_key_is_removed_from_rotation(monkeypatch):
+    monkeypatch.setattr(fetch.time, "sleep", lambda s: None)
+    session = _FakeSession({
+        "bad": [(400, "Invalid MAP_KEY.")],
+        "good": [(200, CSV_OK), (200, CSV_OK)],
+    })
+    client = fetch.FirmsClient(["bad", "good"], session=session)
+    client.area_csv("MODIS_NRT", "world", dt.date(2024, 1, 1), 5)
+    client.area_csv("MODIS_NRT", "world", dt.date(2024, 1, 6), 5)
+    assert "bad" in client.pool.dead
+    assert session.calls == ["bad", "good", "good"]
+
+
+def test_bad_day_range_fails_fast_without_rotating(monkeypatch):
+    monkeypatch.setattr(fetch.time, "sleep", lambda s: None)
+    session = _FakeSession({"k1": [(400, "Invalid day range. Expects [1..5].")]})
+    client = fetch.FirmsClient(["k1"], session=session)
+    with pytest.raises(fetch.FetchError, match="day range"):
+        client.area_csv("MODIS_NRT", "world", dt.date(2024, 1, 1), 10)
+    assert session.calls == ["k1"]
