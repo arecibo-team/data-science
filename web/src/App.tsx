@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { loadDay, loadIncidentDay, loadIndex } from "./data";
+import { loadDay, loadIncidentDay, loadIndex, mapLimit } from "./data";
 import { MapView } from "./components/MapView";
 import { Controls, type Filters, type LayerKey } from "./components/Controls";
 import { SENSOR_COLOR } from "./components/PointLayer";
@@ -10,7 +10,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [selected, setSelected] = useState<Point | null>(null);
   const [incidents, setIncidents] = useState<IncidentFeature[]>([]);
 
@@ -33,44 +33,42 @@ export default function App() {
       .catch((e: Error) => setError(e.message));
   }, []);
 
-  // Load the days in the selected range.
+  // Load the detections and European incidents for each day in the selected range.
+  // Progress counts day files finished, across both kinds of file.
   const rangeKey = filters ? `${filters.from}|${filters.to}` : "";
-  useEffect(() => {
-    if (!filters) return;
-    const days = dates.filter((d) => d >= filters.from && d <= filters.to);
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    Promise.all(days.map(loadDay))
-      .then((parts) => {
-        if (!cancelled) setPoints(parts.flat());
-      })
-      .catch((e: Error) => !cancelled && setError(e.message))
-      .finally(() => !cancelled && setLoading(false));
-    return () => {
-      cancelled = true;
-    };
-    // filters.from/to are captured via rangeKey; dates is stable after index loads.
-  }, [rangeKey, dates]);
-
-  // Load the European incidents active on the days in the selected range.
   useEffect(() => {
     if (!filters || !index) return;
     const days = dates.filter((d) => d >= filters.from && d <= filters.to);
     let cancelled = false;
-    Promise.all(days.map((d) => loadIncidentDay(d, index.incidents.dir)))
+    let done = 0;
+    const total = days.length * 2;
+    setError(null);
+    setProgress(total ? { done: 0, total } : null);
+    const tick = () => {
+      done++;
+      if (!cancelled) setProgress({ done, total });
+    };
+    // Three days at a time (six files in flight): loading every day at once drops connections.
+    mapLimit(days, 3, (d) =>
+      Promise.all([
+        loadDay(d).then((pts) => (tick(), pts)),
+        loadIncidentDay(d, index.incidents.dir).then((inc) => (tick(), inc)),
+      ]),
+    )
       .then((parts) => {
         if (cancelled) return;
+        setPoints(parts.flatMap(([pts]) => pts));
         // A fire spanning several days appears in each day file; keep one copy.
         const byId = new Map<string, IncidentFeature>();
-        for (const part of parts) for (const f of part.features) byId.set(f.properties.incident_id, f);
+        for (const [, inc] of parts) for (const f of inc.features) byId.set(f.properties.incident_id, f);
         setIncidents([...byId.values()]);
       })
-      .catch((e: Error) => !cancelled && setError(e.message));
+      .catch((e: Error) => !cancelled && setError(e.message))
+      .finally(() => !cancelled && setProgress(null));
     return () => {
       cancelled = true;
     };
-    // Same trigger as the points effect above.
+    // filters.from/to are captured via rangeKey; dates is stable after index loads.
   }, [rangeKey, dates, index]);
 
   const incidentById = useMemo(
@@ -131,7 +129,7 @@ export default function App() {
           onChange={setFilters}
           counts={counts.counts}
           stats={stats}
-          loading={loading}
+          progress={progress}
         />
         {error && <p className="error">{error}</p>}
 

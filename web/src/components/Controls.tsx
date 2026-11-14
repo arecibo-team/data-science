@@ -20,10 +20,11 @@ interface Props {
   /** Counts within the selected date range, shown next to each layer. */
   counts: Record<LayerKey, number>;
   stats: { total: number; matched: number };
-  loading: boolean;
+  /** Day files finished so far while a new range loads; null when idle. */
+  progress: { done: number; total: number } | null;
 }
 
-export function Controls({ dates, filters, onChange, counts, stats, loading }: Props) {
+export function Controls({ dates, filters, onChange, counts, stats, progress }: Props) {
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch });
   const setLayer = (key: LayerKey, on: boolean) => set({ layers: { ...filters.layers, [key]: on } });
 
@@ -47,7 +48,16 @@ export function Controls({ dates, filters, onChange, counts, stats, loading }: P
             {dates.map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
         </label>
-        {loading && <p className="muted">Loading…</p>}
+        {progress && (
+          <div className="loading" role="status">
+            <div className="progress" role="progressbar" aria-valuemin={0} aria-valuemax={progress.total} aria-valuenow={progress.done}>
+              <div className="progress-bar" style={{ width: `${(progress.done / progress.total) * 100}%` }} />
+            </div>
+            <p className="muted small">
+              Loading {progress.done.toLocaleString()} / {progress.total.toLocaleString()} files…
+            </p>
+          </div>
+        )}
       </fieldset>
 
       <fieldset>
