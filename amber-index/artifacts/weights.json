@@ -1,0 +1,66 @@
+{
+  "burned_share_pct": {
+    "pillar": "danger",
+    "w_ml": 1.0,
+    "w_equal": 1.0,
+    "w_final": 1.0
+  },
+  "hazard_density": {
+    "pillar": "hazards",
+    "w_ml": 1.0,
+    "w_equal": 0.5,
+    "w_final": 0.75
+  },
+  "major_hazards": {
+    "pillar": "hazards",
+    "w_ml": 0.0,
+    "w_equal": 0.5,
+    "w_final": 0.25
+  },
+  "ff_per_100k": {
+    "pillar": "workforce",
+    "w_ml": 1.0,
+    "w_equal": 1.0,
+    "w_final": 1.0
+  },
+  "spend_per_capita": {
+    "pillar": "capability",
+    "w_ml": 0.4633414157091178,
+    "w_equal": 0.3333333333333333,
+    "w_final": 0.39833737452122553
+  },
+  "stations_per_1000km2": {
+    "pillar": "capability",
+    "w_ml": 0.2876876323665157,
+    "w_equal": 0.3333333333333333,
+    "w_final": 0.3105104828499245
+  },
+  "stations_per_100k": {
+    "pillar": "capability",
+    "w_ml": 0.24897095192436658,
+    "w_equal": 0.3333333333333333,
+    "w_final": 0.2911521426288499
+  },
+  "_pillars": {
+    "danger": {
+      "w_ml": 0.444817540956227,
+      "w_equal": 0.25,
+      "w_final": 0.34740877047811347
+    },
+    "hazards": {
+      "w_ml": 0.20074380413094714,
+      "w_equal": 0.25,
+      "w_final": 0.22537190206547358
+    },
+    "workforce": {
+      "w_ml": 0.10115500965907094,
+      "w_equal": 0.25,
+      "w_final": 0.17557750482953546
+    },
+    "capability": {
+      "w_ml": 0.2532836452537549,
+      "w_equal": 0.25,
+      "w_final": 0.25164182262687745
+    }
+  }
+}

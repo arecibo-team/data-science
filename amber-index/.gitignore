@@ -4,4 +4,3 @@ __pycache__/
 .ipynb_checkpoints/
 data/raw/osm_stations.partial.csv
 *.swp
-artifacts/

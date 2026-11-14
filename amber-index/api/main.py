@@ -189,6 +189,47 @@ def health():
                   latest_year=m["latest_year"], features=m["feature_order"], cv_metrics=m["cv_metrics"])
 
 
+class PillarWeight(BaseModel):
+    w_ml: float
+    w_equal: float
+    w_final: float
+
+
+class FeatureInfo(BaseModel):
+    feature: str
+    label: str
+    pillar: str
+    direction: int
+    w_ml: float
+    w_equal: float
+    w_final: float
+
+
+class ModelInfo(BaseModel):
+    model: str
+    target: str
+    features: list[FeatureInfo]
+    pillars: dict[str, PillarWeight]
+    scale: dict[str, float]
+    alpha: float
+    bands: dict[str, float]
+    training_years: list[int]
+    model_years: list[int]
+    cv_metrics: list[CVMetric]
+    created: str
+
+
+@app.get("/model", response_model=ModelInfo)
+def model_info():
+    m, w = STATE["metadata"], STATE["weights"]
+    feats = [FeatureInfo(feature=f, label=FEATURES[f][3], pillar=FEATURES[f][0], direction=FEATURES[f][1],
+                         w_ml=w[f]["w_ml"], w_equal=w[f]["w_equal"], w_final=w[f]["w_final"]) for f in STATE["features"]]
+    return ModelInfo(model=type(STATE["model"]).__name__, target=m["target"], features=feats,
+                     pillars={p: PillarWeight(**v) for p, v in w["_pillars"].items()}, scale=m["scale"],
+                     alpha=m.get("alpha", 0.5), bands=m["bands"], training_years=m["training_years"],
+                     model_years=m["model_years"], cv_metrics=m["cv_metrics"], created=m["created"])
+
+
 @app.get("/countries", response_model=list[Country])
 def countries():
     return [Country(iso2=k, name=v) for k, v in sorted(NAMES.items(), key=lambda kv: kv[1])]

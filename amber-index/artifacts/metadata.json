@@ -1,0 +1,215 @@
+{
+  "feature_order": [
+    "burned_share_pct",
+    "hazard_density",
+    "major_hazards",
+    "ff_per_100k",
+    "spend_per_capita",
+    "stations_per_1000km2",
+    "stations_per_100k"
+  ],
+  "training_years": [
+    2014,
+    2020
+  ],
+  "model_years": [
+    2014,
+    2024
+  ],
+  "latest_year": 2025,
+  "alpha": 0.5,
+  "centroids": {
+    "MT": [
+      35.92959500100005,
+      14.387276185265488
+    ],
+    "LU": [
+      49.770910982500055,
+      6.144795331081397
+    ],
+    "CY": [
+      35.12311182850004,
+      33.23307180437874
+    ],
+    "SI": [
+      46.12564427850003,
+      14.611124550814163
+    ],
+    "DK": [
+      56.23536579200007,
+      9.259802946350506
+    ],
+    "BE": [
+      50.50904899900004,
+      4.844602515943068
+    ],
+    "NL": [
+      52.08635699900006,
+      5.493574424792298
+    ],
+    "EE": [
+      58.51320987050005,
+      25.562018167316225
+    ],
+    "SK": [
+      48.655954656000034,
+      19.629030735318835
+    ],
+    "HR": [
+      44.63258452250005,
+      15.47372156858756
+    ],
+    "LT": [
+      55.171843652000064,
+      24.17466276251183
+    ],
+    "LV": [
+      56.91552409700006,
+      24.46454498654044
+    ],
+    "IE": [
+      53.412895170500065,
+      -8.061983051741748
+    ],
+    "CZ": [
+      49.83173049900006,
+      15.535766950114887
+    ],
+    "AT": [
+      47.68655284750005,
+      14.753151896778636
+    ],
+    "PT": [
+      39.59417182400006,
+      -8.287880490334711
+    ],
+    "HU": [
+      47.23113715300005,
+      19.157570013985925
+    ],
+    "GR": [
+      39.094440776000056,
+      21.79030413170668
+    ],
+    "BG": [
+      42.774199909500055,
+      25.160457011591888
+    ],
+    "RO": [
+      45.95097149900005,
+      24.304328100487908
+    ],
+    "IT": [
+      42.48741113750006,
+      12.674520919375361
+    ],
+    "PL": [
+      51.91379175400007,
+      19.151618708955297
+    ],
+    "FI": [
+      64.93295859200003,
+      27.48184479243086
+    ],
+    "DE": [
+      51.09612036750005,
+      10.486246212685957
+    ],
+    "SE": [
+      62.17773234850006,
+      14.901960168089174
+    ],
+    "ES": [
+      39.83374030850004,
+      -3.5211237887213622
+    ],
+    "FR": [
+      46.70239463850004,
+      2.186146101735069
+    ]
+  },
+  "cv_metrics": [
+    {
+      "model": "ElasticNet",
+      "validation": "Leave one country out",
+      "MAE": 0.1304,
+      "Spearman": 0.5718
+    },
+    {
+      "model": "ElasticNet",
+      "validation": "Time split (train t<=2020, test t>=2021)",
+      "MAE": 0.1402,
+      "Spearman": 0.5694
+    },
+    {
+      "model": "LightGBM",
+      "validation": "Leave one country out",
+      "MAE": 0.1397,
+      "Spearman": 0.4865
+    },
+    {
+      "model": "LightGBM",
+      "validation": "Time split (train t<=2020, test t>=2021)",
+      "MAE": 0.1396,
+      "Spearman": 0.4975
+    },
+    {
+      "model": "Persistence",
+      "validation": "Leave one country out",
+      "MAE": 0.1356,
+      "Spearman": 0.718
+    },
+    {
+      "model": "Persistence",
+      "validation": "Time split (train t<=2020, test t>=2021)",
+      "MAE": 0.1342,
+      "Spearman": 0.7338
+    }
+  ],
+  "scale": {
+    "k": 7.640527771924125,
+    "c": -0.14286535079726417
+  },
+  "reference": {
+    "burned_share_pct": 0.1654726189355819,
+    "hazard_density": 0.302309763373868,
+    "major_hazards": 0.0,
+    "ff_per_100k": 0.4886463744636571,
+    "spend_per_capita": 0.5351970223108373,
+    "stations_per_1000km2": 0.4034827148326428,
+    "stations_per_100k": 0.39837701560001815
+  },
+  "bands": {
+    "green_below": 40,
+    "red_from": 60
+  },
+  "target": "burned area as % of land area in year t+1 (model predicts log1p)",
+  "sources": {
+    "eurostat_api": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/",
+    "spending": "gov_10a_exp?cofog99=GF0302&sector=S13&na_item=TE&unit=MIO_EUR",
+    "population": "demo_pjan?sex=T&age=TOTAL",
+    "area": "reg_area3?landuse=TOTAL&unit=KM2",
+    "firefighters_2024": "https://ec.europa.eu/eurostat/documents/4187653/20614201/eu-lfs-extraction-firefighters-2024.xlsx/05e74593-6a14-807e-5429-c6732668aa78?t=1755599278722",
+    "firefighters_news": [
+      "https://ec.europa.eu/eurostat/web/products-eurostat-news/w/ddn-20240823-1",
+      "https://ec.europa.eu/eurostat/web/products-eurostat-news/w/ddn-20230807-1"
+    ],
+    "burned_area": "https://ourworldindata.org/grapher/annual-area-burnt-by-wildfires-gwis.csv?useColumnShortNames=true",
+    "overpass": [
+      "https://overpass-api.de/api/interpreter",
+      "https://overpass.kumi.systems/api/interpreter",
+      "https://overpass.private.coffee/api/interpreter"
+    ],
+    "boundaries": "https://gisco-services.ec.europa.eu/distribution/v2/countries/geojson/CNTR_RG_20M_2020_4326.geojson",
+    "hazards": "https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH"
+  },
+  "created": "2026-11-14T16:54:14+00:00",
+  "versions": {
+    "python": "3.12.16",
+    "pandas": "3.1.1",
+    "numpy": "2.5.4",
+    "scikit-learn": "1.9.1",
+    "lightgbm": "4.7.0",
+    "shap": "0.54.1"
+  }
+}

@@ -61,7 +61,8 @@ later, run the line below, then rerun the notebook:
 .venv/bin/uvicorn api.main:app --reload
 ```
 
-The API loads `artifacts/` at startup and refuses to start if the notebook has not been run.
+The trained model ships in `artifacts/` (written by the last section of the notebook), so the API starts without
+retraining. Rerun the notebook to refresh it; the API refuses to start if any artifact is missing.
 
 ```sh
 curl localhost:8000/health
@@ -83,6 +84,7 @@ curl -X POST localhost:8000/optimize/assistance -H 'Content-Type: application/js
 | Endpoint | Returns |
 |---|---|
 | `GET /health` | status, training years, CV metrics |
+| `GET /model` | the exported model: features, pillars, weights (ML, equal, final), score scale, CV metrics |
 | `GET /countries` | the 27 ISO2 codes and names |
 | `GET /scores?year=` | every country for a year (default latest), sorted by score |
 | `GET /scores/{iso2}?year=` | one country with its top 3 reasons, e.g. "High burned area pushes the score up 12 pts" |

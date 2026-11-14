@@ -184,3 +184,12 @@ def test_optimize_shocked_donor_gives_less(client):
 def test_optimize_validation(client):
     assert client.post("/optimize/assistance", json={"recipient": "PT"}).status_code == 422
     assert client.post("/optimize/assistance", json={"recipient": "XX", "need": 10}).status_code == 404
+
+
+def test_model_info(client):
+    r = client.get("/model")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["model"] == "LGBMRegressor"
+    assert {f["pillar"] for f in body["features"]} >= {"danger", "hazards", "workforce", "capability"}
+    assert abs(sum(p["w_final"] for p in body["pillars"].values()) - 1) < 1e-6
