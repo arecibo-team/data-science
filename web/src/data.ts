@@ -252,3 +252,31 @@ export function soilUrl(cls: number | null): string {
   const u = api("soil/tiles/0/0/0.png", cls === null ? {} : { cls });
   return u.replace("soil/tiles/0/0/0.png", "soil/tiles/{z}/{x}/{y}.png").replace(/%7B/g, "{").replace(/%7D/g, "}");
 }
+
+// ---- country risk -----------------------------------------------------------
+
+export interface CountryRisk {
+  name: string;
+  /** Expected number of 0.1 degree cells with a confirmed fire in the window. */
+  expected: number;
+  /** Rank against the country's own history, 0..1; null for countries that never see fire. */
+  pct: number | null;
+  /** 0 (green) to 1 (red). */
+  score: number;
+  active: number;
+  /** Cells that really burned in the window, null while the window is not complete. */
+  burned: number | null;
+}
+export interface RiskDay {
+  feature_date: string;
+  horizon: number;
+  complete: boolean;
+  countries: CountryRisk[];
+}
+export async function loadRisk(date: string, signal?: AbortSignal): Promise<RiskDay | null> {
+  const r = await fetch(api("risk", { date }), { signal });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`risk: HTTP ${r.status}`);
+  return r.json();
+}
+export const loadRegions = (): Promise<GeoJSON.FeatureCollection> => getJson<GeoJSON.FeatureCollection>(api("regions"));

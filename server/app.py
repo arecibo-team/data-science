@@ -34,7 +34,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import db, fire_weather, pipeline, settings, soiltiles, tilegen, tiles
-from .ml import jobs as ml_jobs, predict as ml_predict, train as ml_train
+from .ml import jobs as ml_jobs, predict as ml_predict, regions as ml_regions, train as ml_train
 
 log = logging.getLogger("server")
 WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -394,6 +394,28 @@ def api_forecast(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
                       | {"n": len(f["p"])}).encode()
     body = struct.pack("<I", len(head)) + head + f["lat"].tobytes() + f["lon"].tobytes() + f["p"].tobytes() + f["actual"].tobytes()
     return Response(body, media_type="application/octet-stream")
+
+
+@app.get("/api/risk")
+def api_risk(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
+    """Country level risk for a forecast made on `date`: expected number of cells with a confirmed fire in the
+    next horizon days, and where it ranks against that country's own history (pct, 0..1)."""
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(422, "bad date")
+    run = ml_predict.latest_run()
+    out = run and ml_regions.risk(run["id"], date, run["params"]["horizon"])
+    if out is None:
+        raise HTTPException(404, "no country risk for the newest run")
+    return out
+
+
+@app.get("/api/regions")
+def api_regions():
+    """Country outlines (Natural Earth, public domain), for the risk layer."""
+    return Response(ml_regions.FILE.read_bytes(), media_type="application/geo+json",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/api/soil/tiles/{z}/{x}/{y}.png")

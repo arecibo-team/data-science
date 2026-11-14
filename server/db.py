@@ -124,6 +124,11 @@ CREATE TABLE IF NOT EXISTS model_checkpoints (
     train_loss REAL, val_loss REAL, is_final INTEGER NOT NULL DEFAULT 0, weights BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_ckpt_run ON model_checkpoints(run_id, id);
+CREATE TABLE IF NOT EXISTS country_risk (
+    run_id INTEGER NOT NULL, date TEXT NOT NULL, country TEXT NOT NULL,
+    expected REAL NOT NULL, pct REAL, active INTEGER NOT NULL, burned INTEGER NOT NULL,
+    PRIMARY KEY (run_id, date, country)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS forecast_cache (
     run_id INTEGER NOT NULL, date TEXT NOT NULL, r INTEGER NOT NULL, c INTEGER NOT NULL, p REAL NOT NULL,
     PRIMARY KEY (run_id, date, r, c)

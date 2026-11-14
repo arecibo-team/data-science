@@ -17,7 +17,7 @@ import numpy as np
 from sklearn.metrics import average_precision_score, precision_recall_curve
 
 from .. import db, settings
-from . import benchmark, features
+from . import benchmark, features, regions
 
 log = logging.getLogger("server.ml")
 NEG_KEEP = 0.1
@@ -161,6 +161,10 @@ def train(run_id: int, emit: Callable[[dict], None], stop: threading.Event, resu
                 metrics["benchmark"] = benchmark.replay(data, booster, metrics["threshold"], horizon, event, p["features"])
             except Exception:  # noqa: BLE001 - a failed replay must not lose the trained model
                 log.exception("event replay failed")
+        try:   # country level risk for the forecast map
+            regions.store(run_id, data, regions.series(data, booster, p["features"], horizon, p["neg_keep"]), horizon)
+        except Exception:  # noqa: BLE001
+            log.exception("country risk failed")
         with db.session() as con:
             con.execute("UPDATE model_runs SET status='done', finished_at=?, metrics=?, rounds_done=? WHERE id=?",
                         (now(), json.dumps(metrics), max(booster.current_iteration(), history[-1]["round"] if history else 0), run_id))

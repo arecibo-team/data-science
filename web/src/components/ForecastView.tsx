@@ -5,7 +5,7 @@ import { MapView } from "./MapView";
 import { SoilControl, type SoilState } from "./SoilControl";
 import { TrainPanel } from "./TrainPanel";
 import { EventCheck } from "./EventCheck";
-import { loadForecast, loadRuns, soilUrl, tileUrl, type Forecast, type ModelRun } from "../data";
+import { loadForecast, loadRegions, loadRisk, loadRuns, soilUrl, tileUrl, type CountryRisk, type Forecast, type ModelRun, type RiskDay } from "../data";
 
 const FUTURE_DAYS = 6;
 const CELL_KM = 11; // a 0.1 degree cell
@@ -141,6 +141,43 @@ function RealLayer({ forecast }: { forecast: Forecast | null }) {
   return null;
 }
 
+// ---- country risk -----------------------------------------------------------
+
+/** Green (0) through yellow to red (1). */
+const riskColor = (s: number) => `hsl(${120 - 120 * Math.min(1, Math.max(0, s))}, 70%, 45%)`;
+const riskWord = (s: number) => (s >= 0.9 ? "Very high" : s >= 0.7 ? "High" : s >= 0.4 ? "Elevated" : s >= 0.15 ? "Normal" : "Low");
+
+/** Layer 0: every country coloured by its risk score, under the cell layers. */
+function CountryLayer({ regions, risk }: { regions: GeoJSON.FeatureCollection | null; risk: RiskDay | null }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!regions || !risk) return;
+    const by = new Map<string, CountryRisk>(risk.countries.map((c) => [c.name, c]));
+    if (!map.getPane("risk")) {
+      const pane = map.createPane("risk");
+      pane.style.zIndex = "350";
+    }
+    const layer = L.geoJSON(regions, {
+      pane: "risk",
+      style: (f) => {
+        const c = by.get(f?.properties?.name);
+        return c ? { color: "#fff", weight: 1, fillColor: riskColor(c.score), fillOpacity: 0.55 }
+                 : { color: "#fff", weight: 0.5, fillColor: "#9ca3af", fillOpacity: 0.12 };
+      },
+      onEachFeature: (f, l) => {
+        const c = by.get(f.properties?.name);
+        const real = c && c.burned !== null ? `<br>Real data: ${c.burned} cells had a confirmed fire` : "";
+        l.bindTooltip(c
+          ? `<strong>${f.properties?.name}</strong>: ${riskWord(c.score)} (${Math.round(c.score * 100)}/100)<br>`
+            + `Expected fire cells: ${c.expected.toFixed(1)}${c.pct !== null ? `, more than ${Math.round(c.pct * 100)}% of its usual days` : ""}${real}`
+          : `<strong>${f.properties?.name}</strong>: no recent fire activity`, { sticky: true });
+      },
+    }).addTo(map);
+    return () => { layer.remove(); };
+  }, [map, regions, risk]);
+  return null;
+}
+
 // ---- two maps that move together ------------------------------------------
 
 const groups = new Map<string, Set<L.Map>>();
@@ -192,6 +229,9 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   const [run, setRun] = useState<ModelRun | null>(null);
   const [showModel, setShowModel] = useState(true);
   const [showReal, setShowReal] = useState(true);
+  const [showCountries, setShowCountries] = useState(true);
+  const [regions, setRegions] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [risk, setRisk] = useState<RiskDay | null>(null);
   const [onlyAlerts, setOnlyAlerts] = useState(false);
   const [split, setSplit] = useState(false);
   const [realWindow, setRealWindow] = useState<"next" | "day">("next");
@@ -201,6 +241,15 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   useEffect(() => {
     loadRuns().then((r) => setRun(r.runs.find((x) => x.id === r.active) ?? null)).catch(() => undefined);
   }, [modelVersion]);
+
+  useEffect(() => { loadRegions().then(setRegions).catch(() => undefined); }, []);
+  useEffect(() => {
+    const ctl = new AbortController();
+    const t = setTimeout(() => {
+      loadRisk(day, ctl.signal).then(setRisk).catch(() => undefined);
+    }, 120);
+    return () => { clearTimeout(t); ctl.abort(); };
+  }, [day, modelVersion]);
 
   useEffect(() => {
     if (!playing) return;
@@ -258,6 +307,7 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   const modelMap = (
     <MapView key="model" visible={null} tileUrl={null} incidents={[]} muted soilUrl={soilLayer} onPick={noop} onView={noop}>
       {split && <MapSync group="forecast" />}
+      {showCountries && <CountryLayer regions={regions} risk={risk} />}
       <ModelLayer forecast={forecast} onlyAlerts={onlyAlerts} />
     </MapView>
   );
@@ -269,6 +319,7 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   );
   const overlayMap = (
     <MapView key="overlay" visible={null} tileUrl={showReal ? realTiles : null} incidents={[]} muted soilUrl={soilLayer} onPick={noop} onView={noop}>
+      {showCountries && <CountryLayer regions={regions} risk={risk} />}
       {showModel && <ModelLayer forecast={forecast} onlyAlerts={onlyAlerts} />}
       {showReal && <RealLayer forecast={forecast} />}
     </MapView>
@@ -325,6 +376,10 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
             <span className="ring" /> Real data
           </label>
           <label className="check">
+            <input type="checkbox" checked={showCountries} onChange={(e) => setShowCountries(e.target.checked)} />
+            <span className="ramp" /> Country risk
+          </label>
+          <label className="check">
             <input type="checkbox" checked={split} onChange={(e) => setSplit(e.target.checked)} /> Side by side
           </label>
           <label className="check">
@@ -347,6 +402,26 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
             A ring around a solid dot is a hit; a ring alone is a miss; a solid dot alone is a false alarm.
           </p>
         </fieldset>
+
+        {risk && showCountries && (
+          <fieldset>
+            <legend>Country risk, next {risk.horizon} days</legend>
+            <div className="ramp-bar" /><div className="ramp-labels small muted"><span>OK</span><span>Really bad</span></div>
+            <ul className="risk-list">
+              {[...risk.countries].filter((c) => c.score >= 0.15).sort((a, b) => b.score - a.score).slice(0, 8).map((c) => (
+                <li key={c.name}>
+                  <span className="dot" style={{ background: riskColor(c.score) }} /> {c.name}
+                  <span className="muted"> {riskWord(c.score)} · {c.expected.toFixed(1)} cells{c.burned !== null ? ` · ${c.burned} real` : ""}</span>
+                </li>
+              ))}
+              {!risk.countries.some((c) => c.score >= 0.15) && <li className="muted">Every country is at normal or low risk.</li>}
+            </ul>
+            <p className="muted small">
+              Score: the model's expected number of fire cells in the country, ranked against that country's own year.
+              Real: cells that really had a confirmed fire in the window.
+            </p>
+          </fieldset>
+        )}
 
         {missing && <p className="small">No completed model yet. Train one below.</p>}
         {forecast && (

@@ -203,3 +203,24 @@ def test_holdout_event_is_never_trained_on_and_is_replayed(tmp_db):
 def test_new_runs_hold_out_the_configured_event(tmp_db):
     run_id = train.create_run({"rounds": 3})
     assert train.get_run(run_id)["params"]["holdout_event"]["first"] == settings.HOLDOUT_EVENT["first"]
+
+
+def test_country_lookup_score_and_risk_endpoint(tmp_db):
+    from server.ml import regions
+    names, _ = regions.countries()
+    ids = regions.country_ids(np.array([38.0, 48.8, 0.0]), np.array([23.7, 2.3, -30.0]))
+    assert [names[i] for i in ids[:2]] == ["Greece", "France"] and ids[2] == -1       # the sea belongs to nobody
+    assert regions.score(0.005, 0.96) < 0.01 and regions.score(3.0, 0.98) == 0.98 and regions.score(3.0, None) == 0.0
+    run_id = train.create_run({"rounds": 3})
+    with db.session() as con:
+        con.execute("UPDATE model_runs SET status='done', metrics='{}' WHERE id=?", (run_id,))
+        con.execute("INSERT INTO model_checkpoints(run_id,round,created_at,is_final,weights) VALUES (?,?,?,?,?)", (run_id, 1, "x", 1, b""))
+        con.executemany("INSERT INTO country_risk VALUES (?,?,?,?,?,?,?)", [
+            (run_id, "2025-08-08", "Greece", 2.9, 0.97, 109, 5), (run_id, "2025-08-20", "Greece", 0.0, 0.1, 109, 0)])
+    with TestClient(app_mod.app) as client:
+        r = client.get("/api/risk", params={"date": "2025-08-08"}).json()
+        g = r["countries"][0]
+        assert g["name"] == "Greece" and g["score"] > 0.9 and g["burned"] == 5 and r["complete"]
+        far = client.get("/api/risk", params={"date": "2030-01-01"}).json()
+        assert far["feature_date"] == "2025-08-20" and not far["complete"] and far["countries"][0]["burned"] is None
+        assert client.get("/api/regions").json()["features"]
