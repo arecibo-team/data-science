@@ -12,12 +12,15 @@ import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Literal
+
 from pydantic import BaseModel, Field, model_validator
 
 from amber import ARTIFACTS_DIR, NAMES
 from amber.features import FEATURES, PILLARS, compute_rates
 from amber.model import load_artifacts
 from amber.power import power_index
+from amber.simulate import PRESETS, run_scenario
 from amber.scoring import amber_score, band, contributions, gap, pillar_scores, reason_text
 
 STATE: dict = {}
@@ -245,3 +248,83 @@ def custom_weights(body: CustomWeights):
     out = [CustomScore(iso2=df.loc[i, "iso2"], name=df.loc[i, "name"], amber=round(float(v), 2), band=band(float(v)), rank=r + 1)
            for r, (i, v) in enumerate(order.items())]
     return CustomWeightsResponse(year=y, weights={k: round(v, 4) for k, v in pw.items()}, scores=out)
+
+
+class HazardEvent(BaseModel):
+    type: Literal["FL", "EQ", "WF", "DR", "TC", "VO"]
+    alert: Literal["Green", "Orange", "Red"]
+    count: int = Field(1, ge=1, le=50)
+
+
+class Shock(BaseModel):
+    iso2: str
+    preset: str | None = None
+    events: list[HazardEvent] = []
+
+    @model_validator(mode="after")
+    def has_events(self):
+        if not self.preset and not self.events:
+            raise ValueError("give a preset or a list of events")
+        if self.preset and self.preset not in PRESETS:
+            raise ValueError(f"unknown preset, use one of {sorted(PRESETS)}")
+        return self
+
+
+class SimulateRequest(BaseModel):
+    year: int | None = None
+    alpha: float = Field(0.5, ge=0, le=1)
+    shocks: list[Shock] = Field(min_length=1)
+
+
+class SimRow(BaseModel):
+    iso2: str
+    name: str
+    shocked: bool
+    power_before: float
+    power_after: float
+    power_change: float
+    power_rank_before: int
+    power_rank_after: int
+    rank_change: int
+    amber_before: float
+    amber_after: float
+    band_before: str
+    band_after: str
+
+
+class SimulateResponse(BaseModel):
+    year: int
+    rows: list[SimRow]
+
+
+def _raw_table(year: int) -> pd.DataFrame:
+    df = STATE["df"][STATE["df"].year == year]
+    raw = pd.DataFrame([{**{f: (np.nan if r["raw"].get(f) is None else r["raw"][f]) for f in STATE["features"]},
+                         "area_km2": r["area_km2"], "hazard_load": r["hazard_load"]} for r in df.to_dict("records")],
+                       index=df["iso2"].to_list())
+    return raw
+
+
+@app.get("/simulate/presets")
+def simulate_presets() -> dict[str, list[HazardEvent]]:
+    return {k: [HazardEvent(type=t, alert=a, count=c) for t, a, c in v] for k, v in PRESETS.items()}
+
+
+@app.post("/simulate", response_model=SimulateResponse)
+def simulate(body: SimulateRequest):
+    y = _year(body.year)
+    shocks = {}
+    for sh in body.shocks:
+        iso2 = sh.iso2.upper().replace("EL", "GR")
+        if iso2 not in NAMES:
+            raise HTTPException(404, f"Unknown country '{iso2}'")
+        events = list(PRESETS.get(sh.preset, [])) + [(e.type, e.alert, e.count) for e in sh.events]
+        shocks[iso2] = shocks.get(iso2, []) + events
+    res = run_scenario(_raw_table(y), shocks, STATE["preprocessor"], STATE["features"], STATE["final_weights"],
+                       STATE["scale"], body.alpha, y)
+    rows = [SimRow(iso2=i, name=NAMES[i], shocked=bool(r.shocked), power_before=round(r.power_before, 2),
+                   power_after=round(r.power_after, 2), power_change=round(r.power_change, 2),
+                   power_rank_before=int(r.power_rank_before), power_rank_after=int(r.power_rank_after),
+                   rank_change=int(r.rank_change), amber_before=round(r.amber_before, 2), amber_after=round(r.amber_after, 2),
+                   band_before=r.band_before, band_after=r.band_after) for i, r in res.iterrows()]
+    return SimulateResponse(year=y, rows=rows)

@@ -118,3 +118,31 @@ def test_more_hazards_lower_power(client):
 def test_custom_weights_with_hazards(client):
     r = client.post("/score/custom-weights", json={"danger": 1, "workforce": 1, "capability": 1, "hazards": 1})
     assert r.status_code == 200 and abs(r.json()["weights"]["hazards"] - 0.25) < 1e-6
+
+
+def test_simulate_presets(client):
+    r = client.get("/simulate/presets")
+    assert r.status_code == 200 and "multi_hazard" in r.json()
+
+
+def test_simulate_shock_lowers_power_of_strongest(client):
+    strongest = min(client.get("/scores").json(), key=lambda x: x["power_rank"])["iso2"]
+    r = client.post("/simulate", json={"shocks": [{"iso2": strongest, "preset": "multi_hazard"}]})
+    assert r.status_code == 200
+    row = next(x for x in r.json()["rows"] if x["iso2"] == strongest)
+    assert row["shocked"] and row["power_after"] < row["power_before"] and row["rank_change"] >= 0
+
+
+def test_simulate_custom_events_on_weak_country(client):
+    weakest = max(client.get("/scores").json(), key=lambda x: x["power_rank"])["iso2"]
+    body = {"shocks": [{"iso2": weakest, "events": [{"type": "FL", "alert": "Red", "count": 2}]}]}
+    row = next(x for x in client.post("/simulate", json=body).json()["rows"] if x["iso2"] == weakest)
+    assert row["power_after"] <= row["power_before"] and row["amber_after"] >= row["amber_before"]
+
+
+def test_simulate_unknown_country(client):
+    assert client.post("/simulate", json={"shocks": [{"iso2": "XX", "preset": "drought"}]}).status_code == 404
+
+
+def test_simulate_needs_events(client):
+    assert client.post("/simulate", json={"shocks": [{"iso2": "RO"}]}).status_code == 422
