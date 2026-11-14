@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, model_validator
 from amber import ARTIFACTS_DIR, NAMES
 from amber.features import FEATURES, PILLARS, compute_rates
 from amber.model import load_artifacts
+from amber.power import power_index
 from amber.scoring import amber_score, band, contributions, gap, pillar_scores, reason_text
 
 STATE: dict = {}
@@ -82,9 +83,14 @@ class Score(BaseModel):
     rank_lo: int
     rank_hi: int
     danger: float
+    hazards: float
     workforce: float
     capability: float
     readiness: float
+    hazard_pressure: float
+    power: float
+    power_rank: int
+    hazard_events: dict[str, int]
     archetype: str
     imputed: dict[str, bool]
     firefighters_low_reliability: bool
@@ -110,6 +116,7 @@ class PredictRequest(BaseModel):
     volunteers: float | None = Field(None, ge=0)
     spending_meur: float | None = Field(None, ge=0)
     stations: float | None = Field(None, ge=0)
+    hazard_load: float | None = Field(None, ge=0, description="Alert-weighted GDACS events this year: Green 0.5, Orange 3, Red 9")
 
 
 class ShapItem(BaseModel):
@@ -121,6 +128,7 @@ class PredictResponse(BaseModel):
     predicted_burned_share_pct_next_year: float
     amber: float
     band: str
+    power: float
     pillars: dict[str, float]
     imputed_features: list[str]
     shap_base_value: float
@@ -132,10 +140,11 @@ class CustomWeights(BaseModel):
     danger: float = Field(ge=0)
     workforce: float = Field(ge=0)
     capability: float = Field(ge=0)
+    hazards: float | None = Field(None, ge=0)
 
     @model_validator(mode="after")
     def not_all_zero(self):
-        if self.danger + self.workforce + self.capability <= 0:
+        if self.danger + self.workforce + self.capability + (self.hazards or 0) <= 0:
             raise ValueError("at least one pillar weight must be positive")
         return self
 
@@ -215,7 +224,7 @@ def predict(body: PredictRequest):
     score = float(amber_score(gap(P, w), scale)[0])
     return PredictResponse(
         predicted_burned_share_pct_next_year=round(max(0.0, float(np.expm1(pred_log))), 5),
-        amber=round(score, 2), band=band(score), pillars={p: round(float(P[p].iloc[0]), 4) for p in PILLARS},
+        amber=round(score, 2), band=band(score), power=round(float(power_index(P, w, STATE["metadata"].get("alpha", 0.5)).iloc[0]), 2), pillars={p: round(float(P[p].iloc[0]), 4) for p in PILLARS},
         imputed_features=[f for f in feats if pd.isna(rates[f].iloc[0])],
         shap_base_value=float(np.ravel(STATE["explainer"].expected_value)[0]),
         shap=[ShapItem(feature=f, value=round(float(v), 5)) for f, v in sorted(zip(feats, sv), key=lambda t: -abs(t[1]))])
@@ -225,8 +234,10 @@ def predict(body: PredictRequest):
 def custom_weights(body: CustomWeights):
     y = _year(body.year)
     df = STATE["df"][STATE["df"].year == y]
-    tot = body.danger + body.workforce + body.capability
-    pw = {"danger": body.danger / tot, "workforce": body.workforce / tot, "capability": body.capability / tot}
+    raw = {"danger": body.danger, "workforce": body.workforce, "capability": body.capability,
+           "hazards": STATE["final_weights"]["pillar"].get("hazards", 0.0) if body.hazards is None else body.hazards}
+    tot = sum(raw.values())
+    pw = {k: v / tot for k, v in raw.items()}
     w = {"within": STATE["final_weights"]["within"], "pillar": pw}
     X = pd.DataFrame(list(df["features"]), index=df.index)[STATE["features"]]
     s = pd.Series(amber_score(gap(pillar_scores(X, w), w), STATE["scale"]), index=df.index)

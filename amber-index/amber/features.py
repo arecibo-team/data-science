@@ -13,14 +13,16 @@ from . import EU27, SEED
 # feature -> (pillar, sign inside the index, log1p?, human label)
 FEATURES = {
     "burned_share_pct": ("danger", +1, True, "Burned area"),
+    "hazard_density": ("hazards", +1, True, "Concurrent hazards"),
     "ff_per_100k": ("workforce", -1, True, "Professional firefighters"),
     "volunteers_per_100k": ("workforce", -1, True, "Volunteer firefighters"),
     "spend_per_capita": ("capability", -1, True, "Fire-protection spending"),
     "stations_per_1000km2": ("capability", -1, True, "Fire-station density by area"),
     "stations_per_100k": ("capability", -1, True, "Fire stations per population"),
 }
-PILLARS = ("danger", "workforce", "capability")
-RAW_COLUMNS = ["burned_ha", "area_km2", "population", "firefighters", "volunteers", "spending_meur", "stations"]
+PILLARS = ("danger", "hazards", "workforce", "capability")
+PILLAR_SIGN = {"danger": 1, "hazards": 1, "workforce": -1, "capability": -1}
+RAW_COLUMNS = ["burned_ha", "area_km2", "population", "firefighters", "volunteers", "spending_meur", "stations", "hazard_load"]
 
 
 def active_features(panel: pd.DataFrame) -> list[str]:
@@ -28,6 +30,8 @@ def active_features(panel: pd.DataFrame) -> list[str]:
     feats = list(FEATURES)
     if "volunteers" not in panel or panel["volunteers"].notna().sum() == 0:
         feats.remove("volunteers_per_100k")
+    if "hazard_load" not in panel or panel["hazard_load"].notna().sum() == 0:
+        feats.remove("hazard_density")
     return feats
 
 
@@ -53,6 +57,7 @@ def compute_rates(panel: pd.DataFrame) -> pd.DataFrame:
     p = panel
     out = pd.DataFrame(index=p.index)
     out["burned_share_pct"] = p["burned_ha"] / p["area_km2"]          # ha / km2 = % of land (1 km2 = 100 ha)
+    out["hazard_density"] = p.get("hazard_load", np.nan) / p["area_km2"] * 1e5
     out["ff_per_100k"] = p["firefighters"] / p["population"] * 1e5
     out["volunteers_per_100k"] = p.get("volunteers", np.nan) / p["population"] * 1e5
     out["spend_per_capita"] = p["spending_meur"] * 1e6 / p["population"]
@@ -101,7 +106,7 @@ class Preprocessor:
 
 def build_panel(years: list[int], spending: pd.DataFrame, population: pd.DataFrame, area: pd.DataFrame,
                 burned: pd.DataFrame, firefighters: pd.DataFrame, stations: pd.DataFrame,
-                volunteers: pd.DataFrame | None = None) -> pd.DataFrame:
+                volunteers: pd.DataFrame | None = None, hazards: pd.DataFrame | None = None) -> pd.DataFrame:
     """One row per (iso2, year) with raw indicator columns and `<indicator>_imputed` flags.
 
     - firefighters: nearest-year copy for years without an LFS file (flagged imputed), 'u' flag kept
@@ -123,7 +128,12 @@ def build_panel(years: list[int], spending: pd.DataFrame, population: pd.DataFra
     vol = volunteers if volunteers is not None and len(volunteers) else pd.DataFrame(columns=["iso2", "year", "volunteers"])
     panel = panel.merge(vol.astype({"year": int}) if len(vol) else vol, on=["iso2", "year"], how="left") if len(vol) \
         else panel.assign(volunteers=np.nan)
-    for col in ["spending_meur", "population", "burned_ha", "area_km2", "stations", "volunteers"]:
+    if hazards is not None and len(hazards):
+        panel = panel.merge(hazards, on=["iso2", "year"], how="left")
+        panel[[c for c in hazards.columns if c not in ("iso2", "year")]] = panel[[c for c in hazards.columns if c not in ("iso2", "year")]].fillna(0)
+    else:
+        panel["hazard_load"] = np.nan
+    for col in ["spending_meur", "population", "burned_ha", "area_km2", "stations", "volunteers", "hazard_load"]:
         panel[f"{col}_imputed"] = panel[col].isna()
     panel["firefighters_imputed"] = panel["firefighters_imputed"].fillna(False) | panel["firefighters"].isna()
     return panel
@@ -133,7 +143,7 @@ def tidy_indicators(panel: pd.DataFrame) -> pd.DataFrame:
     """Long table: indicators(iso2, year, indicator, value, source, imputed)."""
     src = {"spending_meur": "Eurostat gov_10a_exp (GF0302)", "population": "Eurostat demo_pjan",
            "area_km2": "Eurostat reg_area3", "burned_ha": "OWID / GWIS", "firefighters": "Eurostat LFS extraction",
-           "stations": "OpenStreetMap (Overpass)", "volunteers": "manual"}
+           "stations": "OpenStreetMap (Overpass)", "volunteers": "manual", "hazard_load": "GDACS alerts"}
     rows = []
     for col, s in src.items():
         part = panel[["iso2", "year", col, f"{col}_imputed"]].rename(columns={col: "value", f"{col}_imputed": "imputed"})

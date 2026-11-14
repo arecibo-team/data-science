@@ -209,6 +209,78 @@ def load_osm_stations(refresh: bool = False, verbose: bool = True, budget_s: flo
     return done
 
 
+ALERT_WEIGHT = {"Green": 0.5, "Orange": 3.0, "Red": 9.0}
+HAZARD_TYPES = {"FL": "flood", "EQ": "earthquake", "WF": "wildfire", "DR": "drought", "TC": "tropical cyclone", "VO": "volcano"}
+
+
+GDACS_NAMES = {"CZ": "Czech Republic"}
+
+
+def _gdacs_pages(query: str, start: str, end: str) -> list[dict]:
+    events, page = [], 1
+    while True:
+        params = {"eventlist": ";".join(HAZARD_TYPES), "fromdate": start, "todate": end, "country": query,
+                  "alertlevel": "Green;Orange;Red", "pagesize": 100, "pagenumber": page}
+        r = _get(SOURCES["hazards"], params=params, tries=4, timeout=120)
+        feats = r.json().get("features", []) if r.status_code == 200 and r.text.strip() else []
+        events += [f["properties"] for f in feats]
+        if len(feats) < 100:
+            return events
+        page += 1
+
+
+def _affected(e: dict) -> set[str]:
+    codes = {c.get("iso3") for c in (e.get("affectedcountries") or []) if c.get("iso3")}
+    return codes | ({e["iso3"]} if e.get("iso3") else set())
+
+
+def load_hazard_events(start_year: int, end_year: int, refresh: bool = False, verbose: bool = False) -> pd.DataFrame:
+    folder = RAW_DIR / "gdacs"
+    folder.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for iso2, (iso3, name) in EU27.items():
+        path = folder / f"{iso3}.json"
+        if path.exists() and not refresh:
+            events = json.loads(path.read_text())
+        else:
+            found = {}
+            for q in dict.fromkeys([GDACS_NAMES.get(iso2, name), iso3]):
+                for e in _gdacs_pages(q, f"{start_year}-01-01", f"{end_year}-12-31"):
+                    if iso3 in _affected(e):
+                        found[(e.get("eventtype"), e.get("eventid"), e.get("episodeid"))] = e
+            events = [{k: e.get(k) for k in ("eventid", "episodeid", "eventtype", "alertlevel", "fromdate", "todate", "name")}
+                      for e in found.values()]
+            path.write_text(json.dumps(events))
+            if verbose:
+                print(f"  {iso2}: {len(events)} events", flush=True)
+            time.sleep(0.5)
+        rows += [{"iso2": iso2, **e} for e in events]
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return pd.DataFrame(columns=["iso2", "eventid", "eventtype", "alertlevel", "start", "end", "name"])
+    df["alertlevel"] = df["alertlevel"].astype(str).str.capitalize()
+    df = df.sort_values("episodeid").drop_duplicates(["iso2", "eventtype", "eventid"], keep="last")
+    df["start"] = pd.to_datetime(df["fromdate"], errors="coerce")
+    df["end"] = pd.to_datetime(df["todate"], errors="coerce").fillna(df["start"])
+    return df[["iso2", "eventid", "eventtype", "alertlevel", "start", "end", "name"]].reset_index(drop=True)
+
+
+def hazard_load(events: pd.DataFrame, years: list[int]) -> pd.DataFrame:
+    rows = []
+    for e in events.itertuples():
+        if pd.isna(e.start):
+            continue
+        for y in range(max(e.start.year, years[0]), min(e.end.year, years[-1]) + 1):
+            rows.append((e.iso2, y, e.eventtype, ALERT_WEIGHT.get(e.alertlevel, 1.0)))
+    df = pd.DataFrame(rows, columns=["iso2", "year", "eventtype", "weight"])
+    grid = pd.MultiIndex.from_product([list(EU27), years], names=["iso2", "year"]).to_frame(index=False)
+    load = df.groupby(["iso2", "year"]).agg(hazard_load=("weight", "sum"), hazard_events=("weight", "size")).reset_index()
+    by_type = df.pivot_table(index=["iso2", "year"], columns="eventtype", values="weight", aggfunc="size", fill_value=0)
+    by_type.columns = [f"events_{HAZARD_TYPES.get(c, c).replace(' ', '_')}" for c in by_type.columns]
+    out = grid.merge(load, on=["iso2", "year"], how="left").merge(by_type.reset_index(), on=["iso2", "year"], how="left")
+    return out.fillna(0)
+
+
 # ---------------------------------------------------------------- manual + boundaries
 def load_volunteers() -> pd.DataFrame:
     """Optional manual file data/manual/volunteers.csv (iso2, year, volunteers); created with headers if absent."""

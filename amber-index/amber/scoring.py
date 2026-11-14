@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .features import FEATURES, PILLARS
+from .features import FEATURES, PILLAR_SIGN, PILLARS
 
 BANDS = [(40, "Green"), (60, "Amber"), (101, "Red")]
 
@@ -12,10 +12,11 @@ BANDS = [(40, "Green"), (60, "Amber"), (101, "Red")]
 def equal_weights(features: list[str]) -> dict:
     """Equal weights within each pillar and across the three pillars."""
     within = {}
-    for p in PILLARS:
+    used = [p for p in PILLARS if any(FEATURES[f][0] == p for f in features)]
+    for p in used:
         fs = [f for f in features if FEATURES[f][0] == p]
         within.update({f: 1 / len(fs) for f in fs})
-    return {"within": within, "pillar": {p: 1 / len(PILLARS) for p in PILLARS}}
+    return {"within": within, "pillar": {p: (1 / len(used) if p in used else 0.0) for p in PILLARS}}
 
 
 def normalise(weights: dict, features: list[str]) -> dict:
@@ -34,6 +35,8 @@ def pillar_scores(X: pd.DataFrame, weights: dict) -> pd.DataFrame:
     out = pd.DataFrame(index=X.index)
     for p in PILLARS:
         fs = [f for f in X.columns if FEATURES[f][0] == p]
+        if not fs:
+            continue
         w = np.array([weights["within"][f] for f in fs])
         out[p] = X[fs].to_numpy() @ w / w.sum()
     return out
@@ -42,7 +45,7 @@ def pillar_scores(X: pd.DataFrame, weights: dict) -> pd.DataFrame:
 def gap(P: pd.DataFrame, weights: dict) -> pd.Series:
     """Danger minus readiness: z = w_D*D - w_W*W - w_C*C (pillar weights sum to 1)."""
     w = weights["pillar"]
-    return w["danger"] * P["danger"] - w["workforce"] * P["workforce"] - w["capability"] * P["capability"]
+    return sum(PILLAR_SIGN[p] * w[p] * P[p] for p in PILLARS if p in P)
 
 
 def fit_scale(z_train: pd.Series) -> dict:
@@ -110,6 +113,7 @@ def gap_of_row(x: pd.Series, weights: dict) -> float:
 
 REASON_PHRASES = {  # feature -> (phrase when the scaled value is high, phrase when low)
     "burned_share_pct": ("High burned area", "Low burned area"),
+    "hazard_density": ("Many concurrent hazards", "Few concurrent hazards"),
     "ff_per_100k": ("Many firefighters per inhabitant", "Few firefighters per inhabitant"),
     "volunteers_per_100k": ("Many volunteer firefighters", "Few volunteer firefighters"),
     "spend_per_capita": ("High fire-protection spending", "Low fire-protection spending"),
@@ -128,9 +132,10 @@ def label_archetypes(centers: pd.DataFrame) -> list[str]:
     """Name KMeans(4) clusters from their pillar centres:
     highest danger -> Wildfire frontline; of the rest, highest readiness -> Well-resourced,
     lowest readiness -> Thin coverage, remaining -> Low exposure."""
-    c = centers.assign(readiness=(centers["workforce"] + centers["capability"]) / 2)
+    c = centers.assign(readiness=(centers["workforce"] + centers["capability"]) / 2,
+                       exposure=centers["danger"] + centers.get("hazards", 0))
     labels = {}
-    front = c["danger"].idxmax(); labels[front] = "Wildfire frontline"
+    front = c["exposure"].idxmax(); labels[front] = "Wildfire frontline"
     rest = c.drop(index=front)
     well = rest["readiness"].idxmax(); labels[well] = "Well-resourced"
     rest = rest.drop(index=well)

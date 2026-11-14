@@ -28,7 +28,7 @@ def ml_table(panel_rates: pd.DataFrame, meta: pd.DataFrame) -> pd.DataFrame:
 
 
 def make_lgbm(features: list[str]) -> LGBMRegressor:
-    mono = [1 if FEATURES[f][0] == "danger" else -1 for f in features]
+    mono = [{"danger": 1, "hazards": 0}.get(FEATURES[f][0], -1) for f in features]
     return LGBMRegressor(max_depth=3, num_leaves=7, n_estimators=300, learning_rate=0.03, min_child_samples=10,
                          subsample=0.9, subsample_freq=1, colsample_bytree=0.9, monotone_constraints=mono,
                          random_state=SEED, verbose=-1)
@@ -82,7 +82,7 @@ def shap_weights(model: LGBMRegressor, X: pd.DataFrame) -> tuple[dict, pd.DataFr
         fs = [f for f in X.columns if FEATURES[f][0] == p]
         tot = imp[fs].sum()
         within.update({f: float(imp[f] / tot) if tot > 0 else 1 / len(fs) for f in fs})
-    pillar = {p: float(imp[[f for f in X.columns if FEATURES[f][0] == p]].sum() / imp.sum()) for p in PILLARS}
+    pillar = {p: float(imp[[f for f in X.columns if FEATURES[f][0] == p]].sum() / imp.sum()) if imp.sum() else 0.0 for p in PILLARS}
     return {"within": within, "pillar": pillar}, pd.DataFrame(sv, columns=X.columns, index=X.index)
 
 

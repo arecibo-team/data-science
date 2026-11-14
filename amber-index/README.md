@@ -12,12 +12,17 @@ weight-slider endpoint are served by a FastAPI service for a front-end.
 | Pillar | Direction | Indicators (all scaled 0–1) |
 |---|---|---|
 | Danger | raises | burned area as % of land |
+| Hazards | raises | GDACS alerts in the country (floods, earthquakes, droughts, storms, volcanoes, wildfires) per 100,000 km², weighted Green 0.5, Orange 3, Red 9 |
 | Workforce | lowers | professional firefighters per 100k inhabitants (+ volunteers per 100k if `data/manual/volunteers.csv` is filled) |
 | Capability | lowers | fire-protection spending per inhabitant; fire stations per 1,000 km² and per 100k inhabitants |
 
-`Amber = 100 · sigmoid(k · (Danger − Readiness − c))` where Danger − Readiness = w_D·D − w_W·W − w_C·C with pillar
+`Amber = 100 · sigmoid(k · (Danger − Readiness − c))` where Danger − Readiness = w_D·D + w_H·H − w_W·W − w_C·C with pillar
 weights summing to 1, `c` is the median of the training years and `k` maps their 5th–95th percentile to about 5–95.
 Preprocessing (log1p, 5th/95th percentile winsorising, min-max) and the `IterativeImputer` are fitted on 2014–2020 only.
+
+**Power** (0–100) estimates the firefighting capacity a country can actually use: readiness reduced by the hazard
+pressure it is under at the same time, `power = 100 · readiness · (1 − 0.5 · pressure)`, where pressure blends the danger
+and hazards pillars. A country with strong services but many simultaneous hazards has less power to spare.
 
 ## Run the notebook
 
@@ -81,6 +86,8 @@ forecast (next year = this year) as a reference. Rows are never shuffled.
   under-staffed unless `data/manual/volunteers.csv` is filled in.
 - **OpenStreetMap station counts vary in completeness** between countries and are a single current snapshot applied to
   every year. Countries whose Overpass query failed are imputed.
+- **GDACS coverage is uneven.** It logs every M4.5+ earthquake (so seismic countries like Greece collect many Green
+  alerts) and its flood and wildfire alerting expanded over the years. Green alerts are down-weighted for that reason.
 - **Burned area covers wildfires, not building fires**, and only fires large enough for satellites (GWIS).
 - Fire-protection spending (COFOG GF0302) covers all fire services, not only wildfire.
 - With 27 countries and about ten years, the model has a few hundred rows; its weights are a guide, which is why the

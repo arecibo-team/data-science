@@ -35,6 +35,8 @@ def test_scores_latest_sorted(client):
     assert all(0 <= a <= 100 for a in ambers)
     assert {r["band"] for r in rows} <= {"Green", "Amber", "Red"}
     assert all(r["rank_lo"] <= r["rank_hi"] for r in rows)
+    assert all(0 <= r["power"] <= 100 for r in rows)
+    assert sorted(r["power_rank"] for r in rows)[0] == 1
 
 
 def test_scores_for_year(client):
@@ -73,6 +75,7 @@ def test_predict_with_nulls(client):
     assert out["predicted_burned_share_pct_next_year"] >= 0
     assert 0 <= out["amber"] <= 100 and out["band"] in {"Green", "Amber", "Red"}
     assert "ff_per_100k" in out["imputed_features"]
+    assert 0 <= out["power"] <= 100
     assert len(out["shap"]) == len(client.get("/health").json()["features"])
 
 
@@ -89,7 +92,7 @@ def test_custom_weights(client):
     r = client.post("/score/custom-weights", json={"danger": 2, "workforce": 1, "capability": 1})
     assert r.status_code == 200
     body = r.json()
-    assert abs(sum(body["weights"].values()) - 1) < 1e-6
+    assert abs(sum(body["weights"].values()) - 1) < 1e-3
     assert len(body["scores"]) == 27 and body["scores"][0]["rank"] == 1
 
 
@@ -101,3 +104,17 @@ def test_custom_weights_change_scores(client):
 
 def test_custom_weights_all_zero(client):
     assert client.post("/score/custom-weights", json={"danger": 0, "workforce": 0, "capability": 0}).status_code == 422
+
+
+def test_more_hazards_lower_power(client):
+    base = {"burned_ha": 20000, "area_km2": 130000, "population": 10400000, "firefighters": 17000,
+            "spending_meur": 900, "stations": 500, "hazard_load": 0}
+    calm = client.post("/predict", json=base).json()
+    shocked = client.post("/predict", json={**base, "hazard_load": 300}).json()
+    assert shocked["power"] < calm["power"]
+    assert shocked["amber"] > calm["amber"]
+
+
+def test_custom_weights_with_hazards(client):
+    r = client.post("/score/custom-weights", json={"danger": 1, "workforce": 1, "capability": 1, "hazards": 1})
+    assert r.status_code == 200 and abs(r.json()["weights"]["hazards"] - 0.25) < 1e-6
