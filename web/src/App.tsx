@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { loadDay, loadIncidentDay, loadIndex } from "./data";
 import { MapView } from "./components/MapView";
-import { Controls, type Filters } from "./components/Controls";
+import { Controls, type Filters, type LayerKey } from "./components/Controls";
 import { SENSOR_COLOR } from "./components/PointLayer";
 import type { Index, IncidentFeature, IncidentProperties, Point } from "./types";
-
-const MAX_DAYS = 7;
 
 export default function App() {
   const [index, setIndex] = useState<Index | null>(null);
@@ -27,11 +25,9 @@ export default function App() {
         setFilters({
           from: all[0],
           to: all[Math.min(2, all.length - 1)],
-          sensors: { MODIS: true, VIIRS: true },
+          layers: { MODIS: true, VIIRS: true, COMMON: true, INCIDENTS: true },
           confidence: "all",
           status: "all",
-          confirmedOnly: false,
-          showIncidents: true,
         });
       })
       .catch((e: Error) => setError(e.message));
@@ -82,11 +78,14 @@ export default function App() {
     [incidents],
   );
 
+  // A detection is drawn when any enabled layer contains it: its sensor layer, or COMMON if confirmed.
+  const inLayer = (p: Point, layers: Filters["layers"]) =>
+    layers[p.sensor] || (layers.COMMON && p.incident !== null);
+
   const visible = useMemo(() => {
     if (!filters) return [];
     return points.filter((p) => {
-      if (filters.confirmedOnly && !p.incident) return false;
-      if (!filters.sensors[p.sensor]) return false;
+      if (!inLayer(p, filters.layers)) return false;
       if (filters.confidence === "high" && p.confidence !== "high") return false;
       if (filters.confidence === "nominal" && p.confidence === "low") return false;
       if (filters.confidence === "low" && p.confidence !== "low") return false;
@@ -96,15 +95,19 @@ export default function App() {
     });
   }, [points, filters]);
 
-  const stats = useMemo(() => {
-    const s = { total: visible.length, MODIS: 0, VIIRS: 0, matched: 0, confirmed: 0 };
-    for (const p of visible) {
-      s[p.sensor]++;
-      if (p.status === "both") s.matched++;
-      if (p.incident) s.confirmed++;
+  // Per-layer counts for the selected range, independent of the layer toggles.
+  const counts = useMemo(() => {
+    const c: Record<LayerKey, number> = { MODIS: 0, VIIRS: 0, COMMON: 0, INCIDENTS: incidents.length };
+    let matched = 0;
+    for (const p of points) {
+      c[p.sensor]++;
+      if (p.incident) c.COMMON++;
+      if (p.status === "both") matched++;
     }
-    return s;
-  }, [visible]);
+    return { counts: c, matched };
+  }, [points, incidents]);
+
+  const stats = { total: visible.length, matched: counts.matched };
 
   const onPick = useCallback((p: Point | null) => setSelected(p), []);
 
@@ -126,17 +129,17 @@ export default function App() {
           dates={dates}
           filters={filters}
           onChange={setFilters}
+          counts={counts.counts}
           stats={stats}
-          incidentCount={incidents.length}
           loading={loading}
-          maxDays={MAX_DAYS}
         />
         {error && <p className="error">{error}</p>}
 
         <div className="legend">
           <span><span className="dot dot-modis" /> MODIS</span>
           <span><span className="dot dot-viirs" /> VIIRS</span>
-          <span><span className="swatch" /> EFFIS / EMS incident</span>
+          <span><span className="dot dot-common" /> COMMON: confirmed inside an EU incident</span>
+          <span><span className="swatch" /> EU Incidents (EFFIS / EMS)</span>
           <span className="muted small">Marker size grows with fire radiative power (FRP).</span>
         </div>
 
@@ -166,7 +169,7 @@ export default function App() {
       <main className="map-wrap">
         <MapView
           points={visible}
-          incidents={filters.showIncidents ? incidents : []}
+          incidents={filters.layers.INCIDENTS ? incidents : []}
           onPick={onPick}
           fitKey={`${rangeKey}:${points.length}`}
         />

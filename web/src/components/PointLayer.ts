@@ -6,6 +6,8 @@ export const SENSOR_COLOR: Record<Point["sensor"], string> = {
   VIIRS: "#2563eb", // blue
 };
 
+const CONFIRMED_RING = "#dc2626"; // red ring: detection confirmed inside an EU incident
+
 /** Marker radius in px, growing with fire radiative power (MW). */
 export function radiusFor(frp: number | null): number {
   if (frp === null || Number.isNaN(frp)) return 2;
@@ -86,6 +88,12 @@ export class CanvasPointLayer extends L.Layer {
       ctx.beginPath();
       ctx.arc(pt.x, pt.y, radiusFor(p.frp), 0, Math.PI * 2);
       ctx.fill();
+      if (p.incident) {
+        // COMMON: confirmed inside a European incident.
+        ctx.strokeStyle = CONFIRMED_RING;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
     }
   }
 

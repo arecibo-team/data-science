@@ -1,53 +1,40 @@
-import type { Confidence, Sensor } from "../types";
+import type { Confidence } from "../types";
 
 export type StatusFilter = "all" | "both" | "single";
 export type ConfFilter = "all" | Confidence;
+export type LayerKey = "MODIS" | "VIIRS" | "COMMON" | "INCIDENTS";
 
 export interface Filters {
   from: string;
   to: string;
-  sensors: Record<Sensor, boolean>;
+  /** Each layer toggles independently. A detection is drawn if any enabled layer includes it. */
+  layers: Record<LayerKey, boolean>;
   confidence: ConfFilter;
   status: StatusFilter;
-  /** Hide NASA detections not inside a known European incident. */
-  confirmedOnly: boolean;
-  /** Draw incident perimeters for the selected date range. */
-  showIncidents: boolean;
 }
 
 interface Props {
   dates: string[];
   filters: Filters;
   onChange: (f: Filters) => void;
-  stats: { total: number; MODIS: number; VIIRS: number; matched: number; confirmed: number };
-  incidentCount: number;
+  /** Counts within the selected date range, shown next to each layer. */
+  counts: Record<LayerKey, number>;
+  stats: { total: number; matched: number };
   loading: boolean;
-  maxDays: number;
 }
 
-export function Controls({ dates, filters, onChange, stats, incidentCount, loading, maxDays }: Props) {
+export function Controls({ dates, filters, onChange, counts, stats, loading }: Props) {
   const set = (patch: Partial<Filters>) => onChange({ ...filters, ...patch });
+  const setLayer = (key: LayerKey, on: boolean) => set({ layers: { ...filters.layers, [key]: on } });
 
-  const setFrom = (from: string) => {
-    // Keep the range within maxDays by moving "to" if needed.
-    let to = filters.to;
-    if (to < from) to = from;
-    const limit = dates[Math.min(dates.indexOf(from) + maxDays - 1, dates.length - 1)];
-    if (to > limit) to = limit;
-    set({ from, to });
-  };
-  const setTo = (to: string) => {
-    let from = filters.from;
-    if (from > to) from = to;
-    const floor = dates[Math.max(dates.indexOf(to) - maxDays + 1, 0)];
-    if (from < floor) from = floor;
-    set({ from, to });
-  };
+  // Any range is allowed. Keep it ordered by pulling the other end along if needed.
+  const setFrom = (from: string) => set({ from, to: filters.to < from ? from : filters.to });
+  const setTo = (to: string) => set({ to, from: filters.from > to ? to : filters.from });
 
   return (
     <div className="controls">
       <fieldset>
-        <legend>Date range (UTC, max {maxDays} days)</legend>
+        <legend>Date range (UTC)</legend>
         <label>
           From
           <select value={filters.from} onChange={(e) => setFrom(e.target.value)}>
@@ -64,18 +51,37 @@ export function Controls({ dates, filters, onChange, stats, incidentCount, loadi
       </fieldset>
 
       <fieldset>
-        <legend>Sensor</legend>
-        {(["MODIS", "VIIRS"] as Sensor[]).map((s) => (
-          <label key={s} className="check">
-            <input
-              type="checkbox"
-              checked={filters.sensors[s]}
-              onChange={(e) => set({ sensors: { ...filters.sensors, [s]: e.target.checked } })}
-            />
-            <span className={`dot dot-${s.toLowerCase()}`} /> {s}
-            <span className="muted"> {stats[s].toLocaleString()}</span>
-          </label>
-        ))}
+        <legend>Layers</legend>
+        <label className="check">
+          <input type="checkbox" checked={filters.layers.MODIS} onChange={(e) => setLayer("MODIS", e.target.checked)} />
+          <span className="dot dot-modis" /> MODIS
+          <span className="muted"> {counts.MODIS.toLocaleString()}</span>
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={filters.layers.VIIRS} onChange={(e) => setLayer("VIIRS", e.target.checked)} />
+          <span className="dot dot-viirs" /> VIIRS
+          <span className="muted"> {counts.VIIRS.toLocaleString()}</span>
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={filters.layers.COMMON} onChange={(e) => setLayer("COMMON", e.target.checked)} />
+          <span className="dot dot-common" /> COMMON
+          <span className="muted"> {counts.COMMON.toLocaleString()}</span>
+        </label>
+        <p className="muted small">
+          COMMON is NASA detections confirmed inside a European incident, from either sensor.
+        </p>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={filters.layers.INCIDENTS}
+            onChange={(e) => setLayer("INCIDENTS", e.target.checked)}
+          />
+          <span className="swatch" /> EU Incidents
+          <span className="muted"> {counts.INCIDENTS.toLocaleString()}</span>
+        </label>
+        <p className="muted small">
+          EFFIS burnt-area perimeters (30 ha or larger) and Copernicus EMS wildfire mapping areas.
+        </p>
       </fieldset>
 
       <fieldset>
@@ -88,32 +94,6 @@ export function Controls({ dates, filters, onChange, stats, incidentCount, loadi
         </select>
         <p className="muted small">
           Nominal and high include detections at nominal or high confidence. Low only selects low.
-        </p>
-      </fieldset>
-
-      <fieldset>
-        <legend>European incidents</legend>
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={filters.confirmedOnly}
-            onChange={(e) => set({ confirmedOnly: e.target.checked })}
-          />
-          Only confirmed European incidents
-          <span className="muted"> {stats.confirmed.toLocaleString()}</span>
-        </label>
-        <label className="check">
-          <input
-            type="checkbox"
-            checked={filters.showIncidents}
-            onChange={(e) => set({ showIncidents: e.target.checked })}
-          />
-          Show incident perimeters
-          <span className="muted"> {incidentCount.toLocaleString()}</span>
-        </label>
-        <p className="muted small">
-          Confirmed means the detection lies within an EFFIS burnt-area perimeter (30 ha or larger) or a
-          Copernicus EMS wildfire mapping area, dated within two days of the incident.
         </p>
       </fieldset>
 

@@ -54,6 +54,8 @@ input[type="checkbox"] { margin: 0; }
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
 .dot-modis { background: var(--modis); }
 .dot-viirs { background: var(--viirs); }
+/* COMMON: confirmed detections are drawn with a red ring around their sensor colour. */
+.dot-common { background: #9ca3af; box-shadow: 0 0 0 2px #dc2626; }
 .legend { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
 
 dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
