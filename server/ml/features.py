@@ -30,6 +30,8 @@ FEATURES_V1 = (  # what runs trained before the lean weather set used
 WEATHER_ACTIVE = ["prec30", "dry_days", "vpd", "gwetroot", "t2m_anom", "ws"]
 FEATURES_ALL = FEATURES_V1 + dry.DERIVED
 FEATURES = [f for f in FEATURES_V1 if f not in WEATHER_COLS and f not in ("prec7", "t2m7")] + WEATHER_ACTIVE
+# No fire history at all: season, place, soil and weather only. Tests whether conditions alone can foresee fires.
+FEATURES_CONDITIONS = ["doy_sin", "doy_cos", "lat", "lon"] + SOIL_COLS + WEATHER_ACTIVE
 NEIGHBOURS = [(dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != (0, 0)]
 
 
