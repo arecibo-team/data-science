@@ -2,7 +2,7 @@
 
     fetch        FIRMS CSVs into data/raw               (network, needs a MAP_KEY, once per day)
     normalize    raw CSVs into data/normalized parquet  (only files not yet converted)
-    harmonize    MODIS/VIIRS clusters -> detections table, clusters table
+    harmonize    drop Africa, match MODIS/VIIRS clusters -> detections table, clusters table
     ems          Copernicus EMS wildfire areas -> incidents table   (network, once per day)
     sentinel2    Sentinel-2 burn scars -> incidents table           (network, slow, resumable)
     tag          mark detections that fall inside an incident
@@ -23,6 +23,7 @@ import pandas as pd
 from firms import config as C
 from firms.harmonize import MatchParams, cluster_table, match_cross_sensor
 from firms.match import tag_incidents
+from firms.region import in_africa
 from firms.normalize import load_normalized, normalize_all
 
 from .. import db, settings, tiles
@@ -71,12 +72,17 @@ def _normalize_run() -> int:
 # ---------------------------------------------------------------- harmonize
 
 def _harmonize_plan() -> Plan:
-    return Plan({"radius_km": settings.MATCH_RADIUS_KM, "window_min": settings.MATCH_WINDOW_MIN})
+    return Plan({"radius_km": settings.MATCH_RADIUS_KM, "window_min": settings.MATCH_WINDOW_MIN,
+                 "exclude_africa": settings.EXCLUDE_AFRICA})
 
 
 def _harmonize_run() -> int:
     df = load_normalized()
     log.info("loaded %d unique detections (NRT/SP deduplicated)", len(df))
+    if settings.EXCLUDE_AFRICA:
+        africa = in_africa(df["lat"], df["lon"])
+        df = df[~africa].reset_index(drop=True)
+        log.info("dropped %d detections on the African continent", int(africa.sum()))
     h = match_cross_sensor(df, MatchParams(settings.MATCH_RADIUS_KM, settings.MATCH_WINDOW_MIN))
     n = store.write_detections(h)
     clusters = cluster_table(h)

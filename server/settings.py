@@ -10,8 +10,12 @@ DB_PATH = os.environ.get("FIRMS_DB", str(C.DATA_DIR / "firms.db"))
 
 # Fetch window and area. The end date defaults to today, so every day brings one new fetch step.
 FETCH_START = os.environ.get("FIRMS_START", C.INCIDENTS_FROM)
-FETCH_BBOX = os.environ.get("FIRMS_BBOX", "-25,-20,45,72")
+# Europe: the same box that rejects non-European incidents (firms.config.EUROPE_BBOX), as W,S,E,N.
+FETCH_BBOX = os.environ.get("FIRMS_BBOX", ",".join(str(v) for v in (C.EUROPE_BBOX[0], C.EUROPE_BBOX[1], C.EUROPE_BBOX[2], C.EUROPE_BBOX[3])))
 FETCH_FAMILIES = [f for f in os.environ.get("FIRMS_FAMILIES", ",".join(C.FAMILIES)).split(",") if f]
+
+# Drop detections on the African continent (the fetch box and older downloads reach into North Africa).
+EXCLUDE_AFRICA = os.environ.get("FIRMS_EXCLUDE_AFRICA", "1") != "0"
 
 MATCH_RADIUS_KM = float(os.environ.get("FIRMS_RADIUS_KM", "1.0"))
 MATCH_WINDOW_MIN = int(os.environ.get("FIRMS_WINDOW_MIN", "180"))
