@@ -29,6 +29,7 @@ from amber.model import load_artifacts
 from amber.power import power_index
 from amber.optimize import AssistanceParams, donor_table, haversine_km, optimize_assistance, plan_assistance
 from amber.area import AreaData, bbox_area_km2
+from amber import regions as regions_mod
 from amber.replay import FireData, eta_hours, resources
 from amber.simulate import PRESETS, run_scenario
 from amber.scoring import amber_score, band, contributions, gap, pillar_scores, reason_text
@@ -698,6 +699,7 @@ class ActiveFire(BaseModel):
     last_date: str
     ratio: float
     status: str
+    region: str | None = None
 
 
 class Normal(BaseModel):
@@ -762,7 +764,8 @@ def replay(date: str | None = Query(None, description="YYYY-MM-DD, default 2021-
     a = (ref - timedelta(days=1)).replace(day=1)
     b = (Date(d.year + (d.month == 12), d.month % 12 + 1, 1) - timedelta(days=1))
     return ReplayResponse(date=d.isoformat(), reference_date=ref.isoformat(), counts=counts,
-                          fires=[ActiveFire(**{k: f[k] for k in ActiveFire.model_fields}) for f in fires],
+                          fires=[ActiveFire(**{k: f[k] for k in ActiveFire.model_fields if k != "region"},
+                                            region=regions_mod.region_of(f["iso2"], f["lat"], f["lon"])) for f in fires],
                           countries=sorted(countries, key=lambda c: c.power_rank), eu_daily=fd.eu_daily(a, b))
 
 
@@ -1027,6 +1030,83 @@ def area_daily(bbox: str | None = None, country: str | None = None, start: str |
                              headers={"Content-Disposition": f'attachment; filename="{_slug(box, country, a, b)}-daily.csv"'})
 
 
+class RegionRow(BaseModel):
+    iso2: str
+    name: str
+    region: Literal["north", "east", "south", "west"]
+    available: bool
+    firefighters: float | None
+    share: float | None
+    detections_month: int
+    fire_share: float | None
+    load_ratio: float | None
+    active_fires: int
+    hotspots_24h: int
+    largest_fire: str | None
+    firefighters_per_fire: int | None
+    power: float
+    anchor: list[float] | None
+
+
+class RegionSource(BaseModel):
+    iso2: str
+    name: str
+    measure: str
+    period: str | None
+    national_base: int | None
+    available: bool
+    rescaled: bool
+
+
+class RegionsResponse(BaseModel):
+    date: str
+    method: str
+    regions: list[RegionRow]
+    sources: list[RegionSource]
+
+
+REGION_METHOD = ("Each country is split into north, east, south and west by bearing from the centroid of its main land mass. "
+                 "Firefighters per region are the regional estimates of the national total. Fire share is the region's part of "
+                 "the country's harmonized detections this month. Regional power is the country's power times the ratio of the "
+                 "region's firefighter share to its fire share, kept between 0.4 and 1.6; with fewer than 20 detections in the "
+                 "country it only reflects how many firefighters the region has.")
+
+
+@app.get("/regions", response_model=RegionsResponse)
+def regions(date: str | None = Query(None, description="YYYY-MM-DD replay day")):
+    d = _replay_date(date)
+    now, fires = _scenario_on(d)
+    power = {i: float(r.power_after) for i, r in now.iterrows()}
+    rows = regions_mod.regional_day(d, power, fires, STATE.get("area"))
+    return RegionsResponse(date=d.isoformat(), method=REGION_METHOD, regions=rows, sources=regions_mod.sources())
+
+
+class ScoreYear(BaseModel):
+    year: int
+    amber: float
+    band: str
+    rank: int
+    power: float
+    power_rank: int
+    danger: float
+    hazards: float
+    workforce: float
+    capability: float
+
+
+@app.get("/scores/{iso2}/history", response_model=list[ScoreYear])
+def score_history(iso2: str):
+    iso2 = iso2.upper().replace("EL", "GR")
+    df = STATE["df"]
+    rows = df[df["iso2"] == iso2].sort_values("year")
+    if rows.empty:
+        raise HTTPException(404, f"Unknown country '{iso2}'")
+    return [ScoreYear(year=int(r.year), amber=round(float(r.amber), 1), band=r.band, rank=int(r["rank"]),
+                      power=round(float(r.power), 1), power_rank=int(r.power_rank), danger=round(float(r.danger), 3),
+                      hazards=round(float(r.hazards), 3), workforce=round(float(r.workforce), 3),
+                      capability=round(float(r.capability), 3)) for _, r in rows.iterrows()]
+
+
 SCENARIOS = {"wildfire_season": [("WF", "Orange", 3)], "several_hazards": PRESETS["multi_hazard"],
              "major_flood": PRESETS["major_flood"], "earthquake": PRESETS["earthquake"], "drought": PRESETS["drought"]}
 
@@ -1043,6 +1123,8 @@ class PlanRequest(BaseModel):
 class PlanDonor(BaseModel):
     iso2: str
     name: str
+    region: str | None = None
+    departure: list[float] | None = None
     sent: int
     water_bombers: int
     ground_teams: int
@@ -1065,6 +1147,9 @@ class LeftOut(BaseModel):
 class PlanRecipient(BaseModel):
     iso2: str
     name: str
+    region: str | None = None
+    region_firefighters: float | None = None
+    region_share: float | None = None
     power_before: float
     power_after: float
     power_with_help: float
@@ -1100,6 +1185,9 @@ def plan(body: PlanRequest):
     incident = (max(own, key=lambda f: f["detections"])["lat"], max(own, key=lambda f: f["detections"])["lon"]) if own \
         else (float(cent.loc[recipient, "lat"]), float(cent.loc[recipient, "lon"]))
     table = donor_table(now, cent)
+    depart = {i: regions_mod.departure(i, incident[0], incident[1]) for i in table.index}
+    table["lat"] = [depart[i][1] for i in table.index]
+    table["lon"] = [depart[i][2] for i in table.index]
     dist = pd.Series(haversine_km(table["lat"], table["lon"], incident[0], incident[1]), index=table.index)
     eta = pd.Series({i: eta_hours(i, dist[i])[0] for i in table.index})
     with_fires = {f["iso2"] for f in fires} - {recipient}
@@ -1114,7 +1202,8 @@ def plan(body: PlanRequest):
     out_donors = []
     for i, r in sent.iterrows():
         res = resources(i, int(r.sent), r["mode"])
-        out_donors.append(PlanDonor(iso2=i, name=NAMES[i], sent=int(r.sent), water_bombers=res["water_bombers"],
+        out_donors.append(PlanDonor(iso2=i, name=NAMES[i], region=depart[i][0], departure=[round(depart[i][1], 4), round(depart[i][2], 4)],
+                                    sent=int(r.sent), water_bombers=res["water_bombers"],
                                     ground_teams=res["ground_teams"], resources=res["text"], eta_h=round(float(r.eta_h), 1),
                                     mode=r["mode"], distance_km=round(float(dist[i]), 0), power_before=round(float(r.power), 1),
                                     power_after=round(float(r.power_after), 1)))
@@ -1127,7 +1216,11 @@ def plan(body: PlanRequest):
     base = float(rec.power_after) / (1 - committed) if committed < 1 else float(rec.power_after)
     remaining = max(0.0, need - info["covered"]) / max(float(rec.firefighters), 1.0)
     with_help = base * (1 - min(remaining, 0.95))
-    recipient_out = PlanRecipient(iso2=recipient, name=NAMES[recipient], power_before=round(float(before.loc[recipient, "power_after"]), 1),
+    inc_region = regions_mod.region_of(recipient, incident[0], incident[1])
+    reg_ff = regions_mod.firefighters(recipient, inc_region) if inc_region else None
+    reg_share = float(regions_mod.TABLE.loc[recipient, f"{inc_region}_share"]) if reg_ff is not None else None
+    recipient_out = PlanRecipient(iso2=recipient, name=NAMES[recipient], region=inc_region, region_firefighters=reg_ff,
+                                  region_share=round(reg_share, 4) if reg_share is not None else None, power_before=round(float(before.loc[recipient, "power_after"]), 1),
                                   power_after=round(float(rec.power_after), 1), power_with_help=round(with_help, 1),
                                   crew_demand=need, firefighters=round(float(rec.firefighters)))
     return PlanResponse(date=d.isoformat(), reference_date=ref.isoformat(), scenario=body.scenario, recipient=recipient_out,

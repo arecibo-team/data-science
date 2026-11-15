@@ -359,3 +359,30 @@ def test_simulate_on_replay_day(client):
     replay = client.get("/replay", params={"date": "2021-08-08"}).json()
     gr = next(c for c in replay["countries"] if c["iso2"] == "GR")
     assert abs(rows["GR"]["power_before"] - gr["power"]) < 0.06
+
+
+def test_regions_split_national_firefighters(client):
+    out = client.get("/regions", params={"date": "2021-08-08"}).json()
+    rows = [r for r in out["regions"] if r["iso2"] == "GR"]
+    assert [r["region"] for r in rows] == ["north", "east", "south", "west"]
+    assert sum(r["firefighters"] for r in rows) == 20500
+    assert abs(sum(r["fire_share"] for r in rows) - 1) < 1e-3
+    east = next(r for r in rows if r["region"] == "east")
+    assert east["largest_fire"] == "Roviés" and east["load_ratio"] > 2
+    mt = [r for r in out["regions"] if r["iso2"] == "MT"]
+    assert all(not r["available"] and r["firefighters"] is None for r in mt)
+    at = next(s for s in out["sources"] if s["iso2"] == "AT")
+    assert at["rescaled"] and sum(r["firefighters"] for r in out["regions"] if r["iso2"] == "AT") == 5200
+
+
+def test_plan_reports_incident_region_and_departures(client):
+    p = client.post("/plan", json={"recipient": "GR", "date": "2021-08-08"}).json()
+    assert p["recipient"]["region"] in {"north", "east", "south", "west"}
+    assert p["recipient"]["region_firefighters"] > 0
+    assert all(d["region"] and len(d["departure"]) == 2 for d in p["donors"])
+
+
+def test_score_history(client):
+    rows = client.get("/scores/GR/history").json()
+    assert len(rows) >= 10 and rows == sorted(rows, key=lambda r: r["year"])
+    assert client.get("/scores/XX/history").status_code == 404
