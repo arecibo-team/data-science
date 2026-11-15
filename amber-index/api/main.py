@@ -23,7 +23,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from amber import ARTIFACTS_DIR, NAMES, RAW_DIR, live
+from amber import ARTIFACTS_DIR, FIRE_NAMES, NAMES, RAW_DIR, live
 from amber.features import FEATURES, PILLARS, compute_rates
 from amber.model import load_artifacts
 from amber.power import power_index
@@ -732,6 +732,13 @@ class ReplayCountry(BaseModel):
     normal: Normal
 
 
+class ReplayNeighbour(BaseModel):
+    iso2: str
+    name: str
+    active_fires: int
+    normal: Normal
+
+
 class DayValue(BaseModel):
     date: str
     value: float | None
@@ -743,6 +750,7 @@ class ReplayResponse(BaseModel):
     counts: dict[str, int]
     fires: list[ActiveFire]
     countries: list[ReplayCountry]
+    neighbours: list[ReplayNeighbour] = []
     eu_daily: list[DayValue]
 
 
@@ -761,12 +769,14 @@ def replay(date: str | None = Query(None, description="YYYY-MM-DD, default 2021-
                                hazards=round(r.hazards_after, 2), workforce=round(r.workforce_after, 2),
                                capability=round(r.capability_after, 2), active_fires=int(per.get(i, 0)),
                                normal=Normal(**fd.normal(i, d))) for i, r in now.iterrows()]
+    neighbours = [ReplayNeighbour(iso2=i, name=FIRE_NAMES[i], active_fires=int(per.get(i, 0)), normal=Normal(**fd.normal(i, d)))
+                  for i in fd.series if i not in NAMES]
     a = (ref - timedelta(days=1)).replace(day=1)
     b = (Date(d.year + (d.month == 12), d.month % 12 + 1, 1) - timedelta(days=1))
     return ReplayResponse(date=d.isoformat(), reference_date=ref.isoformat(), counts=counts,
                           fires=[ActiveFire(**{k: f[k] for k in ActiveFire.model_fields if k != "region"},
                                             region=regions_mod.region_of(f["iso2"], f["lat"], f["lon"])) for f in fires],
-                          countries=sorted(countries, key=lambda c: c.power_rank), eu_daily=fd.eu_daily(a, b))
+                          countries=sorted(countries, key=lambda c: c.power_rank), neighbours=neighbours, eu_daily=fd.eu_daily(a, b))
 
 
 class MonthCell(BaseModel):
@@ -813,7 +823,7 @@ class HistoryResponse(BaseModel):
 
 def _history(iso2: str, date: str | None) -> tuple[str, Date, FireData]:
     iso2 = iso2.upper().replace("EL", "GR")
-    if iso2 not in NAMES:
+    if iso2 not in FIRE_NAMES:
         raise HTTPException(404, f"Unknown country '{iso2}'")
     return iso2, _replay_date(date), _fires()
 
@@ -835,7 +845,7 @@ def history_csv(iso2: str, date: str | None = None):
 def history(iso2: str, date: str | None = None):
     iso2, d, fd = _history(iso2, date)
     an = fd.analog(iso2, d)
-    return HistoryResponse(iso2=iso2, name=NAMES[iso2], date=d.isoformat(), first_year=2001, months=fd.calendar(iso2, d),
+    return HistoryResponse(iso2=iso2, name=FIRE_NAMES[iso2], date=d.isoformat(), first_year=2001, months=fd.calendar(iso2, d),
                            normal=Normal(**fd.normal(iso2, d)), outlook=Outlook(**fd.outlook(iso2, d)),
                            largest_fires=fd.largest(iso2, d), analog=Analog(**an) if an else None,
                            validation_error_pct=fd.meta["validation"].get(iso2, {}).get("mean_abs_error_pct"))
@@ -938,7 +948,7 @@ def _area_args(bbox: str | None, country: str | None, start: str | None, end: st
     box = None
     if country:
         country = country.upper().replace("EL", "GR")
-        if country not in NAMES:
+        if country not in FIRE_NAMES:
             raise HTTPException(404, f"Unknown country '{country}'")
     else:
         try:
@@ -962,7 +972,7 @@ def _area_args(bbox: str | None, country: str | None, start: str | None, end: st
 
 def _area_label(box, country) -> str:
     if country:
-        return NAMES[country]
+        return FIRE_NAMES[country]
     w, s, e, n = box
     ns = lambda v: f"{abs(v):.2f}°{'N' if v >= 0 else 'S'}"
     ew = lambda v: f"{abs(v):.2f}°{'E' if v >= 0 else 'W'}"

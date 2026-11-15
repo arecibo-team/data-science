@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-from . import EU27, RAW_DIR
+from . import EU27, FIRE_COUNTRIES, RAW_DIR
 
 FIRMS_COUNTRY = "https://firms.modaps.eosdis.nasa.gov/data/country/{folder}/{year}/{folder}_{year}_{name}.csv"
 FIRMS_NAMES = {"CZ": "Czech_Republic"}
@@ -18,7 +18,7 @@ FIRMS_DIR = RAW_DIR / "firms"
 
 
 def firms_name(iso2: str) -> str:
-    return FIRMS_NAMES.get(iso2, EU27[iso2][1].replace(" ", "_"))
+    return FIRMS_NAMES.get(iso2, FIRE_COUNTRIES[iso2][1].replace(" ", "_"))
 
 
 def _download_one(task: tuple[str, str, int, Path]) -> tuple[Path, int]:
@@ -45,7 +45,7 @@ def _download_one(task: tuple[str, str, int, Path]) -> tuple[Path, int]:
 def download_all(workers: int = 8, verbose: bool = True, years: dict | None = None) -> None:
     tasks = []
     for sensor, (folder, default_years) in SENSORS.items():
-        for iso2 in EU27:
+        for iso2 in FIRE_COUNTRIES:
             for year in (years or {}).get(sensor, default_years):
                 path = FIRMS_DIR / sensor / f"{iso2}_{year}.csv"
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,10 +120,10 @@ def monthly_counts(cd: pd.DataFrame) -> pd.DataFrame:
 def fit_ratios(monthly: dict[str, pd.DataFrame]) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
     a, b = OVERLAP
     sel = lambda m: m[(m.index.get_level_values("year") >= a) & (m.index.get_level_values("year") <= b)].groupby(level="month").sum().reindex(range(1, 13), fill_value=0)
-    eu = sum(sel(m) for m in monthly.values())
+    eu = sum(sel(m) for k, m in monthly.items() if k in EU27)
     r_eu = (eu["viirs"] / eu["modis"].replace(0, np.nan)).fillna(1.0).to_numpy()
     pre = lambda m: m[(m.index.get_level_values("year") >= 2003) & (m.index.get_level_values("year") <= 2011)].groupby(level="month").sum().reindex(range(1, 13), fill_value=0)
-    eu_pre = sum(pre(m) for m in monthly.values())
+    eu_pre = sum(pre(m) for k, m in monthly.items() if k in EU27)
     terra = (eu_pre["modis"] / eu_pre["terra"].replace(0, np.nan)).fillna(1.0).to_numpy()
     ratios = {}
     for iso2, m in monthly.items():
@@ -173,7 +173,7 @@ def load_places() -> tuple:
     cols = [1, 4, 5, 7, 8, 14]
     p = pd.read_csv(path, sep="\t", header=None, usecols=cols, names=["name", "lat", "lon", "fcode", "cc", "pop"],
                     dtype={"cc": str}, keep_default_na=False, quoting=3)
-    p = p[p["cc"].replace({"EL": "GR"}).isin(EU27)].reset_index(drop=True)
+    p = p[p["cc"].replace({"EL": "GR"}).isin(FIRE_COUNTRIES)].reset_index(drop=True)
     xy = np.c_[p["lat"].to_numpy(), p["lon"].to_numpy() * np.cos(np.radians(p["lat"].to_numpy()))]
     return cKDTree(xy), p
 
@@ -243,7 +243,7 @@ def build(out: Path | None = None, verbose: bool = True) -> dict:
     out = out or ARTIFACTS_DIR / "fires"
     out.mkdir(parents=True, exist_ok=True)
     det, cds, monthly = {}, {}, {}
-    for iso2 in EU27:
+    for iso2 in FIRE_COUNTRIES:
         d = load_detections(iso2)
         det[iso2] = d
         cds[iso2] = cell_days(d)
@@ -254,7 +254,7 @@ def build(out: Path | None = None, verbose: bool = True) -> dict:
     places = load_places()
     days = pd.date_range(ROW_START, ROW_END, freq="D")
     daily, fires, validation, tiles = {}, [], {}, []
-    for iso2 in EU27:
+    for iso2 in FIRE_COUNTRIES:
         h = harmonize_daily(cds[iso2], ratios[iso2], terra)
         daily[iso2] = h
         tiles.append(tile_daily(cds[iso2], ratios[iso2], terra))
@@ -266,7 +266,7 @@ def build(out: Path | None = None, verbose: bool = True) -> dict:
                             "viirs_cell_days_overlap": int(sum(yv.get(y, 0) for y in yrs))}
         if verbose:
             print(f"{iso2}: fires so far {len(fires):,}", flush=True)
-    series = {iso2: {k: [round(float(x), 2) for x in daily[iso2][k].to_numpy()] for k in ("harmonized", "modis", "viirs")} for iso2 in EU27}
+    series = {iso2: {k: [round(float(x), 2) for x in daily[iso2][k].to_numpy()] for k in ("harmonized", "modis", "viirs")} for iso2 in FIRE_COUNTRIES}
     write_json_atomic(out / "daily.json", {"start": f"{ROW_START:%Y-%m-%d}", "end": f"{ROW_END:%Y-%m-%d}", "series": series})
     write_json_atomic(out / "events.json", fires)
     t = pd.concat(tiles, ignore_index=True).groupby(["ty", "tx", "day"], as_index=False)["h"].sum()

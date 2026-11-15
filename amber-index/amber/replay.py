@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import NAMES
+from . import EU27, FIRE_NAMES
 from .optimize import haversine_km
 
 FIRE_ALERT = [(1000, "Red"), (200, "Orange"), (0, "Green")]
@@ -35,7 +35,7 @@ class FireData:
             self.tiles[(int(ty), int(tx))] = (g["day"].to_numpy(), np.concatenate([[0.0], np.cumsum(g["h"].to_numpy())]))
         self.meta = json.loads((folder / "meta.json").read_text())
         self.tile_deg = self.meta.get("tile_deg", 0.5)
-        self.eu = sum(v["harmonized"] for v in self.series.values())
+        self.eu = sum(v["harmonized"] for k, v in self.series.items() if k in EU27)
 
     def idx(self, d: date) -> int:
         return (d - self.start).days
@@ -76,7 +76,7 @@ class FireData:
             today = e.daily.get(d.isoformat(), [0])[0]
             ratio = self.area_ratio(e.lat, e.lon, d)
             status = next(s for cut, s in STATUS if ratio["ratio"] >= cut)
-            out.append({"id": e.id, "iso2": e.iso2, "country": NAMES[e.iso2], "name": e.name, "lat": e.lat, "lon": e.lon,
+            out.append({"id": e.id, "iso2": e.iso2, "country": FIRE_NAMES[e.iso2], "name": e.name, "lat": e.lat, "lon": e.lon,
                         "start": e.start, "day": (d - e.start_d).days + 1, "detections": int(total), "hotspots_24h": int(today),
                         "last_sensor": upto[last_day][2], "last_time": f"{upto[last_day][1][:2]}:{upto[last_day][1][2:]}",
                         "last_date": last_day, "ratio": ratio["ratio"], "status": status,
@@ -86,6 +86,8 @@ class FireData:
     def fire_shocks(self, fires: list[dict]) -> dict:
         shocks: dict[str, list] = {}
         for f in fires:
+            if f["iso2"] not in EU27:
+                continue
             alert = next(a for cut, a in FIRE_ALERT if f["detections"] >= cut)
             shocks.setdefault(f["iso2"], []).append(("WF", alert, 1))
         return shocks

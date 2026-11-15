@@ -21,6 +21,14 @@ EU27 = {
     "PL": ("POL", "Poland"), "PT": ("PRT", "Portugal"), "RO": ("ROU", "Romania"), "SK": ("SVK", "Slovakia"),
     "SI": ("SVN", "Slovenia"), "ES": ("ESP", "Spain"), "SE": ("SWE", "Sweden"),
 }
+NEIGHBOURS = {
+    "UA": ("UKR", "Ukraine"), "MD": ("MDA", "Moldova"), "BY": ("BLR", "Belarus"), "GB": ("GBR", "United Kingdom"),
+    "NO": ("NOR", "Norway"), "CH": ("CHE", "Switzerland"), "RS": ("SRB", "Serbia"), "BA": ("BIH", "Bosnia and Herzegovina"),
+    "ME": ("MNE", "Montenegro"), "AL": ("ALB", "Albania"), "XK": ("XKX", "Kosovo"), "TR": ("TUR", "Turkey"),
+    "GE": ("GEO", "Georgia"), "AM": ("ARM", "Armenia"), "AZ": ("AZE", "Azerbaijan"),
+}
+FIRE_COUNTRIES = {**EU27, **NEIGHBOURS}
+FIRE_NAMES = {iso2: name for iso2, (_, name) in FIRE_COUNTRIES.items()}
 ISO3_TO_ISO2 = {iso3: iso2 for iso2, (iso3, _) in EU27.items()}
 NAME_TO_ISO2 = {name: iso2 for iso2, (_, name) in EU27.items()}
 NAMES = {iso2: name for iso2, (_, name) in EU27.items()}

@@ -9,10 +9,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import EU27, NAMES
+from . import FIRE_COUNTRIES, FIRE_NAMES
 from .fires import AQUA_START, ROW_END, ROW_START, VIIRS_START, load_detections
 
-ISO = list(EU27)
+ISO = list(FIRE_COUNTRIES)
 SENSOR_CODE = {"T": 0, "A": 1, "V": 2}
 SENSOR_NAME = ["MODIS Terra", "MODIS Aqua", "VIIRS S-NPP"]
 BASE_YEARS = (2001, 2020)
@@ -235,7 +235,7 @@ class AreaData:
             "series": {"unit": unit, "values": step},
             "fires": [{"name": e.name, "iso2": e.iso2, "start": e.start, "end": e.end, "lat": e.lat, "lon": e.lon,
                        "detections": int(e.detections), "area_ha": int(e.area_ha)} for e in hit.head(10).itertuples()],
-            "countries": [{"iso2": ISO[k], "name": NAMES[ISO[k]], "detections": int(c)} for k, c in sorted(enumerate(shares), key=lambda t: -t[1]) if c > 0],
+            "countries": [{"iso2": ISO[k], "name": FIRE_NAMES[ISO[k]], "detections": int(c)} for k, c in sorted(enumerate(shares), key=lambda t: -t[1]) if c > 0],
         }
 
     def hotspots_csv(self, bbox, country, a: date, b: date) -> tuple[str, int, bool]:

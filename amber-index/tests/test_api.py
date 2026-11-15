@@ -411,3 +411,13 @@ def test_score_history(client):
     rows = client.get("/scores/GR/history").json()
     assert len(rows) >= 10 and rows == sorted(rows, key=lambda r: r["year"])
     assert client.get("/scores/XX/history").status_code == 404
+
+
+def test_neighbours_are_in_the_fire_record(client):
+    r = client.get("/replay", params={"date": "2021-08-08"}).json()
+    codes = {n["iso2"] for n in r["neighbours"]}
+    assert {"UA", "TR", "GB", "RS"} <= codes
+    assert len(r["countries"]) == 27
+    area = client.get("/area", params={"country": "UA", "start": "2022-03-01", "end": "2022-03-31"})
+    assert area.status_code == 200
+    assert area.json()["summary"]["detections"] > 1000
