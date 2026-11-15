@@ -85,9 +85,10 @@ request).
 
 ### Independent European incidents
 
-NASA detections are only checked against sources that do not use MODIS or VIIRS data. EFFIS
-burnt areas were dropped because they are derived from those same sensors, so matching against
-them would be circular.
+NASA detections are only checked against sources that do not use MODIS or VIIRS data: Copernicus EMS and
+Sentinel-2 burn scars. EFFIS burnt areas (`firms/effis.py`, 2016 onwards) are loaded as a third incident source, but
+they are mapped from MODIS and Sentinel-2 imagery, so they only say which detections belong to a mapped wildfire (the
+forecast label) and must not be used to judge how accurate the detections are.
 
 - **Copernicus EMS** rapid-mapping wildfire activations (`category=fire`), using the AOI extents from the
   dashboard API. These are event-level mapped regions made from separate imagery, not burn perimeters.
@@ -116,7 +117,8 @@ splits ranges into 5-day windows.
 
 | Path | Contents |
 | --- | --- |
-| `data/firms.db` | SQLite: `detections`, `incidents`, `clusters`, `day_stats`, `bin_day`, `pipeline_steps` |
+| `data/firms.db` | SQLite: `detections`, `incidents`, `clusters`, `day_stats`, `bin_day`, `pipeline_steps`, `weather_grid`, `weather_issued`, `country_outlook` |
+| `data/risk/` | country risk models (one per lead and feature set), `outlook.npz` and `meta.json` for the report |
 | `data/tiles/` | cached heat tiles (regenerable) |
 | `data/raw/<SOURCE>/<YYYYMMDD>_<days>.csv` | raw FIRMS responses (gitignored) |
 | `data/normalized/<SOURCE>/*.parquet` | one common schema per detection (`firms/config.py: SCHEMA`) |
@@ -169,3 +171,42 @@ and the cells where a LightGBM model expects a COMMON fire (a detection inside a
   (sum of the cell probabilities), ranked against that country's own year (`country_risk`, `/api/risk?date=`).
 - API: `/api/model/{train,stop,resume/{id},runs,stream}`, `/api/forecast?date=`, `/api/risk?date=`, `/api/regions`,
   `/api/soil/tiles/{z}/{x}/{y}.png?cls=`.
+
+## Country fire risk, 1 to 7 days ahead (`server/risk`)
+
+The question this model answers: **on day D, how many 0.1 degree cells of a country will burn on each of the next
+seven days**, and is that unusual for the country. It was built to test whether the Greek fires of 2025 could have
+been seen coming, so it is strict about time:
+
+- Trained on days up to `2024-12-31` only. Every "normal" (usual fires for the day of the year, usual temperature,
+  the cell's usual fire weather) is computed from those days too.
+- The number of trees is picked on 2023 and 2024, held out; those held-out predictions also set each country's alert
+  threshold (its 90th percentile over May to October). Nothing from the tested season tunes anything.
+- Training uses the weather that came. A replay is fed the **forecasts issued at the time**: ECMWF IFS runs made 1 to
+  7 days earlier (Open-Meteo Previous Runs API, from March 2024, `weather_issued`), mapped onto the NASA POWER
+  reanalysis with a per-cell line fitted on 2024.
+
+Unit: a patch, the part of a 1 degree weather cell inside one country. One LightGBM (Poisson) model per lead predicts
+the burning cells of a patch on D+k; a country is the sum of its patches. Features: fire history of the patch, its
+neighbours and its country up to D; dryness on D (Canadian FWI moisture codes, rain of 30 days, days since rain, soil
+wetness, heat of the last week); the forecast for D+k (fire weather index carried forward through the forecast days,
+wind, heat against normal, humidity, rain on the way); season and place. A second model per lead (`conditions`) gets
+no fire history at all, to show what weather alone can foresee.
+
+```
+uv run python -m server.risk.forecasts --country Greece --from 2025-04-01 --to 2025-10-31   # issued forecasts (resumable)
+uv run python -m server.risk.forecasts --country Greece --from 2024-04-01 --to 2024-10-31   # the year the correction is fitted on
+uv run python -m server.risk.model train        # about 30 minutes; writes data/risk/ and the country_outlook table
+uv run python -m server.risk.model predict      # reuse the saved models (after fetching more forecasts or new days)
+uv run python -m server.risk.report             # Greece 2025 against persistence, the usual, and the fire weather index
+uv run python -m server.risk.report --country Spain --year 2026 --target mv
+```
+
+Once `country_outlook` is filled, `/api/risk?date=` (the country colours of the Forecast tab) answers from this model:
+expected burning cell-days over the next 7 days, ranked against the country's own stored days. Each country says
+whether its numbers came from issued forecasts (`weather: "issued"`) or from the weather that came (`"perfect"`,
+which flatters past days). Without it the endpoint falls back to the cell model's sums.
+
+Limits: issued forecasts are fetched per country (the free service is rate limited), so other countries replay with
+perfect weather. The state on day D uses the reanalysis of D, which in live use arrives days late. The label is a
+fire seen by both MODIS and VIIRS, which includes some crop burning.
