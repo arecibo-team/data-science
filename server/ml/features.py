@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from .. import context, db
+from .. import context, db, eobs
 from . import dryness as dry
 
 KEY = 100_000
@@ -32,7 +32,9 @@ FEATURES_V1 = (  # what runs trained before the lean weather set used
 # 30-day rain, days since rain, vapor pressure deficit, root-zone soil wetness, temperature anomaly, wind.
 WEATHER_ACTIVE = ["prec30", "dry_days", "vpd", "gwetroot", "t2m_anom", "ws"]
 FORECAST = ["fc_wsx", "fc_tmaxa", "fc_prec", "fc_vpd"]   # weather of D+1..D+3: peak wind, peak temperature anomaly, rain, dryness
-FEATURES_ALL = FEATURES_V1 + dry.DERIVED + FORECAST
+TERRAIN_COLS = ["elev", "relief", "slope", "ndvi_s", "ndmi_s", "ndvi_w"]   # server/terrain.py: height and vegetation of the cell
+EOBS = eobs.FEATURES                                                       # server/eobs.py: weather of the cell itself (0.1 degree)
+FEATURES_ALL = FEATURES_V1 + dry.DERIVED + FORECAST + TERRAIN_COLS + EOBS
 FEATURES_V2 = [f for f in FEATURES_V1 if f not in WEATHER_COLS and f not in ("prec7", "t2m7")] + WEATHER_ACTIVE   # before forecast weather
 FEATURES = FEATURES_V2 + FORECAST
 FUTURE_DAYS = 7        # weather arrays reach this many days past the last fire day, for the forecast
@@ -58,6 +60,9 @@ class Data:
     wi: np.ndarray                   # (n_cand,) row in W or -1
     last: np.ndarray                 # (n_cand, T) int16 index of the latest common day <= day, or -1
     W: dict[str, np.ndarray] = field(default_factory=dict)
+    E: dict = field(default_factory=dict)  # E-OBS feature memory maps (cells x days), see server/eobs.py
+    erow: np.ndarray | None = None   # (n_cand,) row in E per candidate cell, -1 when it has none
+    eoff: int = 0                    # day index of the first E-OBS day relative to the first day of the data
     train_end: int = 0               # day index of the last train day
     hold: tuple[int, int] | None = None   # day indices of a held-out window, never trained on (see load)
 
@@ -68,8 +73,10 @@ class Data:
         return (self.start + dt.timedelta(days=int(i))).isoformat()
 
 
-def load(train_end: str, con=None, label: str = "confirmed", holdout: tuple[str, str] | None = None) -> Data | None:
-    """holdout=(first, last) dates: that window is removed from training, and from the choice of candidate cells, so a
+def load(train_end: str, con=None, label: str = "confirmed", holdout: tuple[str, str] | None = None,
+         first: str | None = None) -> Data | None:
+    """first: drop every day before it (the EFFIS based confirmed label is sparse in its early years).
+    holdout=(first, last) dates: that window is removed from training, and from the choice of candidate cells, so a
     cell that only ever burned inside it is unknown to the model. Used to benchmark against one event."""
     own = con is None
     con = con or db.connect(readonly=True)
@@ -78,9 +85,12 @@ def load(train_end: str, con=None, label: str = "confirmed", holdout: tuple[str,
         soil = pd.read_sql("SELECT * FROM soil_cells", con)
         wg = pd.read_sql("SELECT * FROM weather_grid", con)
         wf = pd.read_sql("SELECT r1, c1, date, t2m, t2mx, ws, wsx, prec, rh FROM weather_forecast", con)
+        terr = pd.read_sql("SELECT * FROM terrain_cells", con)
     finally:
         if own:
             con.close()
+    if first:
+        bd = bd[bd["date"] >= first]
     if bd.empty:
         return None
     day = pd.to_datetime(bd["date"])
@@ -116,22 +126,37 @@ def load(train_end: str, con=None, label: str = "confirmed", holdout: tuple[str,
         pos = np.minimum(np.searchsorted(keys, k2), n - 1)
         nb[:, j] = np.where(keys[pos] == k2, pos, n)
     lat, lon = (r + 0.5) * db.BIN_DEG - 90, (c + 0.5) * db.BIN_DEG - 180
-    static = np.zeros((len(cand), 2 + len(SOIL_COLS)), np.float32)
+    static = np.zeros((len(cand), 2 + len(SOIL_COLS) + len(TERRAIN_COLS)), np.float32)
     static[:, 0], static[:, 1] = lat, lon
+    static[:, 2 + len(SOIL_COLS):] = np.nan
+    if len(terr):
+        tk = terr["r"].to_numpy(np.int64) * KEY + terr["c"].to_numpy(np.int64)
+        order = np.argsort(tk)
+        tk, tv = tk[order], terr[TERRAIN_COLS].to_numpy(np.float32)[order]
+        pos_t = np.minimum(np.searchsorted(tk, keys[cand]), len(tk) - 1)
+        hit = tk[pos_t] == keys[cand]
+        static[hit, 2 + len(SOIL_COLS):] = tv[pos_t[hit]]
     if len(soil):
         sk = {(int(a), int(b)): i for i, (a, b) in enumerate(zip(soil["r4"], soil["c4"]))}
         sv = soil[SOIL_COLS].to_numpy(np.float32)
         for i, (la, lo_) in enumerate(zip(lat, lon)):
             j = sk.get(context.cell_index(la, lo_))
             if j is not None:
-                static[i, 2:] = sv[j]
+                static[i, 2:2 + len(SOIL_COLS)] = sv[j]
     W, wi = _weather(start, t, wg, wf, r, c)
     last = np.empty((len(cand), t), np.int16)
     for a in range(0, len(cand), 20000):     # latest fire day <= each day, in blocks of cells
         blk = cand[a:a + 20000]
         idx = np.where(B[blk] > 0, np.arange(t, dtype=np.int16)[None, :], np.int16(-1))
         last[a:a + 20000] = np.maximum.accumulate(idx, axis=1)
-    return Data(start, t, keys, cand, B, MV, HI, LO, C, Y, nb, static, wi, last, W, te, hold)
+    E, erow, eoff = {}, None, 0
+    ld = eobs.load()
+    if ld is not None:
+        ekeys, E, e_start = ld
+        eoff = (start - e_start).days
+        pe = np.minimum(np.searchsorted(ekeys, keys[cand]), len(ekeys) - 1)
+        erow = np.where(ekeys[pe] == keys[cand], pe, -1)
+    return Data(start, t, keys, cand, B, MV, HI, LO, C, Y, nb, static, wi, last, W, E, erow, eoff, te, hold)
 
 
 HORIZON_FC = 3
@@ -229,6 +254,19 @@ def build(d: Data, pos: np.ndarray, di: np.ndarray) -> np.ndarray:
         cols["lat"], cols["lon"] = d.static[p, 0], d.static[p, 1]
         for j, name in enumerate(SOIL_COLS):
             cols[name] = d.static[p, 2 + j]
+        for j, name in enumerate(TERRAIN_COLS):
+            cols[name] = d.static[p, 2 + len(SOIL_COLS) + j]
+        if d.erow is not None:
+            er = d.erow[p]
+            ei = dd + d.eoff
+            e_ok = (er >= 0) & (ei >= 0)
+            for name in EOBS:
+                m = d.E[name]
+                ei_c = np.minimum(ei, m.shape[1] - 1)
+                cols[name] = np.where(e_ok & (ei < m.shape[1]), np.asarray(m[np.maximum(er, 0), np.maximum(ei_c, 0)], np.float32), np.nan)
+        else:
+            for name in EOBS:
+                cols[name] = np.full(len(p), np.nan)
         w_ok = d.wi[p] >= 0
         wrow = np.where(w_ok, d.wi[p], 0)
         for name in WEATHER_COLS + dry.DERIVED + FORECAST:

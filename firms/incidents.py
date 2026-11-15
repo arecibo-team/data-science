@@ -6,8 +6,9 @@ Sources (none derived from MODIS/VIIRS):
   * Sentinel-2 burn scars computed by ``firms.sentinel2`` (dNBR), only for events whose
     scar was confirmed.
 
-EFFIS burnt areas were removed: they are derived from MODIS/VIIRS, so using them to check
-NASA detections would be circular.
+EFFIS burnt areas (``firms.effis``) are a third incident source for the forecast label: they are mapped from
+MODIS and Sentinel-2 imagery, so they are not independent of NASA's sensors and must not be used to judge how
+accurate the detections are, only to say which detections belong to a mapped wildfire.
 
 Output: ``data/incidents/incidents.geojson`` (FeatureCollection, EPSG:4326) with
 properties ``incident_id, source, name, country, start_date, end_date, area_ha``.

@@ -104,6 +104,13 @@ CREATE TABLE IF NOT EXISTS soil_squares (    -- 1.6 km squares with at least 25%
 );
 CREATE INDEX IF NOT EXISTS ix_soil_sq ON soil_squares(lat, lon);
 
+-- Elevation and vegetation per 0.1 degree cell (see server/terrain.py), static fuel proxies for the model.
+CREATE TABLE IF NOT EXISTS terrain_cells (
+    r INTEGER NOT NULL, c INTEGER NOT NULL,
+    elev REAL, relief REAL, slope REAL, ndvi_s REAL, ndmi_s REAL, ndvi_w REAL,
+    PRIMARY KEY (r, c)
+) WITHOUT ROWID;
+
 -- Daily weather on a 1 degree grid (see server/weather_grid.py), the model's weather features.
 CREATE TABLE IF NOT EXISTS weather_grid (
     r1 INTEGER NOT NULL, c1 INTEGER NOT NULL, date TEXT NOT NULL,

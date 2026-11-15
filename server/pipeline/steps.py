@@ -4,6 +4,7 @@
     normalize    raw CSVs into data/normalized parquet  (only files not yet converted)
     harmonize    drop Africa, match MODIS/VIIRS clusters -> detections table, clusters table
     ems          Copernicus EMS wildfire areas -> incidents table   (network, once per day)
+    effis        EFFIS burnt-area polygons 2016- -> incidents table (network, once per day)
     sentinel2    Sentinel-2 burn scars -> incidents table           (network, slow, resumable)
     tag          mark detections that fall inside an incident
     context      embed context-data (CORINE bare ground) into the soil tables
@@ -110,6 +111,17 @@ def _ems_run() -> int:
         return store.replace_incidents(con, "Copernicus EMS", feats)
 
 
+def _effis_plan() -> Plan:
+    return Plan({"on": settings.today()})
+
+
+def _effis_run() -> int:
+    from firms import effis
+    feats = effis.normalize(effis.fetch())
+    with db.session() as con:
+        return store.replace_incidents(con, "EFFIS", feats)
+
+
 def _s2_plan() -> Plan:
     return Plan({"max_events": settings.S2_MAX_EVENTS})
 
@@ -202,6 +214,18 @@ def _weather_run() -> int:
     return weather_grid.run(settings.FETCH_START)
 
 
+def _terrain_plan() -> Plan:
+    from .. import terrain
+    if not terrain.credentials():
+        return Plan(skip="no CDSE_CLIENT_ID / CDSE_CLIENT_SECRET in .env")
+    return Plan({"layers": "dem90,s2summer2023,s2winter2023", "res": terrain.RES})
+
+
+def _terrain_run() -> int:
+    from .. import terrain
+    return terrain.run()
+
+
 def _forecast_plan() -> Plan:
     if not settings.WEATHER:
         return Plan(skip="FIRMS_WEATHER=0")
@@ -218,9 +242,11 @@ STEPS.extend([
     Step("harmonize", "Match MODIS and VIIRS, load detections", _harmonize_plan, _harmonize_run, deps=("normalize",)),
     Step("ems", "Copernicus EMS incidents", _ems_plan, _ems_run),
     Step("sentinel2", "Sentinel-2 burn scars", _s2_plan, _s2_run, deps=("harmonize",)),
-    Step("tag", "Tag detections with incidents", _tag_plan, _tag_run, deps=("harmonize",), soft=("ems", "sentinel2")),
+    Step("effis", "EFFIS burnt-area polygons", _effis_plan, _effis_run),
+    Step("tag", "Tag detections with incidents", _tag_plan, _tag_run, deps=("harmonize",), soft=("ems", "sentinel2", "effis")),
     Step("stats", "Day, cell and incident counts", _stats_plan, _stats_run, deps=("tag",)),
     Step("context", "Embed context-data (soil)", _context_plan, _context_run),
     Step("weather", "Daily weather on a 1 degree grid", _weather_plan, _weather_run, soft=("stats",)),
+    Step("terrain", "Elevation and vegetation per cell", _terrain_plan, _terrain_run),
     Step("forecast", "Weather forecast for the next days", _forecast_plan, _forecast_run, soft=("weather",)),
 ])

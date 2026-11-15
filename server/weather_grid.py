@@ -76,11 +76,19 @@ def run(start: str, should_stop=lambda: False, workers: int | None = None, rever
     def one(cell):
         if should_stop():
             return cell, None
-        try:
-            return cell, fetch_cell(*cell, start, end)
-        except (fire_weather.WeatherDataError, KeyError, StopIteration) as exc:
-            log.warning("weather cell %s skipped: %s", cell, exc)
-            return cell, None
+        for attempt in range(6):
+            try:
+                return cell, fetch_cell(*cell, start, end)
+            except fire_weather.WeatherDataError as exc:
+                if "429" in str(exc) and attempt < 5 and not should_stop():   # too many requests: back off, then retry
+                    time.sleep(20 * (attempt + 1))
+                    continue
+                log.warning("weather cell %s skipped: %s", cell, str(exc)[:120])
+                return cell, None
+            except (KeyError, StopIteration) as exc:
+                log.warning("weather cell %s skipped: %r", cell, exc)
+                return cell, None
+        return cell, None
 
     with ThreadPoolExecutor(workers) as pool:
         for cell, rows in pool.map(one, todo):

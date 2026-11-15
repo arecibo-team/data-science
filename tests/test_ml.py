@@ -254,3 +254,37 @@ def test_forecast_weather_comes_from_the_forecast_table_after_the_reanalysis(tmp
     X = features.build(d, np.array([0]), np.array([last]))
     col = dict(zip(features.FEATURES_ALL, X[0]))
     assert col["fc_wsx"] == 25.0 and col["fc_prec"] == 0.0       # next days are the forecast, not a carried-over day
+
+
+def test_terrain_cell_means_follow_the_raster_orientation():
+    from server import terrain
+    arr = np.zeros((20, 20), np.float32)
+    arr[:10, :10], arr[10:, :10], arr[:10, 10:], arr[10:, 10:] = 1, 2, 3, 4      # the first raster row is the northern edge
+    out = terrain._cell_means(arr, (0.0, 34.0, 0.2, 34.2))
+    r0, c0 = 1240, 1800                                                          # (34 + 90) / 0.1 and 180 / 0.1
+    assert out == {(r0 + 1, c0): 1.0, (r0, c0): 2.0, (r0 + 1, c0 + 1): 3.0, (r0, c0 + 1): 4.0}
+
+
+def test_eobs_features_look_back_and_ahead():
+    from server import eobs
+    t = 60
+    rr = np.zeros((1, t), np.float32); rr[0, 5] = 5.0
+    tx, hu, fg = np.full((1, t), 20.0, np.float32), np.full((1, t), 50.0, np.float32), np.full((1, t), 3.0, np.float32)
+    f = eobs._derive(rr, tx, hu, fg)
+    assert f["e_dry_days"][0, 5] == 0 and f["e_dry_days"][0, 10] == 5          # days since rain over 1 mm
+    assert f["e_prec30"][0, 10] == 5.0 and f["e_prec30"][0, 40] == 0.0          # rain of the last 30 days
+    assert f["e_fc_prec"][0, 3] == 5.0 and f["e_fc_prec"][0, 6] == 0.0          # rain of D+1..D+3
+    assert f["e_fc_fg"][0, 0] == 3.0 and np.isnan(f["e_fc_fg"][0, t - 1])        # no window after the last day
+    assert set(f) == set(eobs.FEATURES)
+
+
+def test_soil_and_terrain_fill_their_own_static_columns(tmp_db):
+    _fill_bins()
+    context.load()
+    with db.session() as con:
+        con.execute("INSERT INTO terrain_cells VALUES (400, 1900, 120.0, 15.0, 3.0, 0.6, 0.2, 0.3)")
+    d = features.load(TRAIN_END)
+    X = features.build(d, np.arange(len(d.cand)), np.full(len(d.cand), 60))
+    col = {f: X[:, i] for i, f in enumerate(features.FEATURES_ALL)}
+    assert np.isclose(col["elev"], 120.0).sum() == 1 and np.isnan(col["elev"]).sum() == len(d.cand) - 1
+    assert np.isfinite(col["sand"]).all()
