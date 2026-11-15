@@ -1,7 +1,7 @@
 """Weather forecasts as they were issued, for an honest replay of past days.
 
 Open-Meteo's Previous Runs API keeps, for every hour, what the ECMWF IFS run made 1..7 days earlier said about it
-(from March 2024). `fetch` stores those as daily values per weather cell in `weather_issued`; `source` turns them
+(from March 2024; the leads in data.LEADS are fetched). `fetch` stores those as daily values per weather cell in `weather_issued`; `source` turns them
 into the arrays `data.outlooks` reads, corrected for the steady difference between the forecast model and the NASA
 POWER reanalysis the risk model was trained on. The correction is fitted on days up to `fit_end` only.
 
@@ -79,8 +79,8 @@ def fetch(p: data.Panel, country: str, start: str, end: str) -> int:
         while a <= d1:
             b = min(a + dt.timedelta(days=CHUNK_DAYS - 1), d1)
             with db.session() as con:
-                have = con.execute("SELECT COUNT(DISTINCT date) FROM weather_issued WHERE r1=? AND c1=? AND date BETWEEN ? AND ? AND lead=7",
-                                   (r1, c1, a.isoformat(), b.isoformat())).fetchone()[0]
+                have = con.execute("SELECT COUNT(DISTINCT date) FROM weather_issued WHERE r1=? AND c1=? AND date BETWEEN ? AND ? AND lead=?",
+                                   (r1, c1, a.isoformat(), b.isoformat(), max(data.LEADS))).fetchone()[0]
             if have < 0.9 * ((b - a).days + 1):
                 rows = fetch_cell(r1, c1, float(p.lat[i]), float(p.lon[i]), a.isoformat(), b.isoformat())
                 with db.session() as con:

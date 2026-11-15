@@ -97,8 +97,8 @@ def test_outlook_is_stored_and_served_as_country_risk(tmp_db):
         day = p.date_of(105)
         r = client.get("/api/risk", params={"date": day}).json()
         c = r["countries"][0]
-        assert r["model"] == "risk" and r["horizon"] == 7 and c["name"] == "Greece" and c["weather"] == "issued"
-        assert c["burned"] == 14 and c["expected"] == pytest.approx(float(issued[:, 105].sum()), rel=1e-4) and c["score"] > 0.5
+        assert r["model"] == "risk" and r["horizon"] == 3 and c["name"] == "Greece" and c["weather"] == "issued"
+        assert c["burned"] == 6 and c["expected"] == pytest.approx(float(issued[:, 105].sum()), rel=1e-4) and c["score"] > 0.5
         early = client.get("/api/risk", params={"date": p.date_of(50)}).json()["countries"][0]
         assert early["weather"] == "perfect" and early["expected"] < c["expected"]
         late = client.get("/api/risk", params={"date": "2030-01-01"}).json()

@@ -1,6 +1,6 @@
 """The risk model's country outlook in the database, and the answer of /api/risk built from it.
 
-`store` writes one row per country, target day, lead and mode to `country_outlook`. `risk` sums the seven leads of
+`store` writes one row per country, target day, lead and mode to `country_outlook`. `risk` sums the leads of
 one issue day into the shape the map already draws (see server/ml/regions.py for the older, cell based version).
 """
 from __future__ import annotations
@@ -50,7 +50,7 @@ def store(p: data.Panel, perfect: np.ndarray, issued: np.ndarray | None, issued_
 
 
 def _history(con) -> dict:
-    """Per country: the sorted 7 day totals of every stored issue day (perfect mode), to rank a day against."""
+    """Per country: the sorted totals over the leads of every stored issue day (perfect mode), to rank a day against."""
     ver = con.execute("SELECT COUNT(*) FROM country_outlook").fetchone()[0]
     if _cache.get("ver") != ver:
         hist: dict = {}
@@ -63,7 +63,7 @@ def _history(con) -> dict:
 
 def risk(date: str) -> dict | None:
     """Country risk for a forecast issued on `date` (clamped to the last stored issue day): expected burning cell-days
-    over the next 7 days, ranked against the country's own stored days. None when nothing is stored."""
+    over the next days (one per lead), ranked against the country's own stored days. None when nothing is stored."""
     with db.session() as con:
         last = con.execute("SELECT MAX(issued) FROM country_outlook WHERE mode='perfect'").fetchone()[0]
         if not last:
