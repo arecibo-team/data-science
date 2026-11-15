@@ -6,14 +6,19 @@ one issue day into the shape the map already draws (see server/ml/regions.py for
 from __future__ import annotations
 
 import datetime as dt
+from functools import lru_cache
 
 import numpy as np
+import shapely
 
 from .. import db
 from ..ml import regions
 from . import data
 
 _cache: dict = {}
+EARTH_KM = 6371.0
+SEASON_DAYS = 30          # a day is ranked against stored days within this many days of the same time of year
+MIN_SEASON = 30           # fewer than this many such days: rank against every stored day instead
 
 
 def store(p: data.Panel, perfect: np.ndarray, issued: np.ndarray | None, issued_cid: int | None, cover: np.ndarray | None,
@@ -49,16 +54,44 @@ def store(p: data.Panel, perfect: np.ndarray, issued: np.ndarray | None, issued_
     return len(rows)
 
 
+@lru_cache(maxsize=1)
+def _area_km2() -> dict:
+    """Surface of every country in km2, from its outline projected to an equal-area approximation."""
+    names, geoms = regions.countries()
+
+    def to_km(a):
+        lon, lat = np.radians(a[:, 0]), np.radians(a[:, 1])
+        return np.column_stack([EARTH_KM * lon * np.cos(lat), EARTH_KM * lat])
+    return {n: float(shapely.transform(g, to_km).area) for n, g in zip(names, geoms)}
+
+
 def _history(con) -> dict:
-    """Per country: the sorted totals over the leads of every stored issue day (perfect mode), to rank a day against."""
+    """Per country: (day of year, total over the leads) of every stored issue day (perfect mode), to rank a day against."""
     ver = con.execute("SELECT COUNT(*) FROM country_outlook").fetchone()[0]
     if _cache.get("ver") != ver:
         hist: dict = {}
-        for name, tot in con.execute("SELECT country, SUM(expected) FROM country_outlook WHERE mode='perfect' "
-                                     "GROUP BY country, issued HAVING COUNT(*)=?", (len(data.LEADS),)):
-            hist.setdefault(name, []).append(tot)
-        _cache.update(ver=ver, hist={k: np.sort(v) for k, v in hist.items()})
+        for name, issued, tot in con.execute("SELECT country, issued, SUM(expected) FROM country_outlook WHERE mode='perfect' "
+                                             "GROUP BY country, issued HAVING COUNT(*)=?", (len(data.LEADS),)):
+            hist.setdefault(name, []).append((dt.date.fromisoformat(issued).timetuple().tm_yday, tot))
+        _cache.update(ver=ver, hist={k: (np.array([d for d, _ in v]), np.array([t for _, t in v])) for k, v in hist.items()})
     return _cache["hist"]
+
+
+def _pct(h, day: str, exp: float) -> float | None:
+    """Share of the country's stored days in the same season that had a total at or below exp. The season is the days
+    within SEASON_DAYS of the same day of the year (across all years), so a summer day is not ranked against winter.
+    None for a country that never sees fire."""
+    if h is None:
+        return None
+    doy, tot = h
+    d0 = dt.date.fromisoformat(day).timetuple().tm_yday
+    gap = np.abs(doy - d0)
+    if tot.max() < 1.0:
+        return None
+    near = tot[np.minimum(gap, 366 - gap) <= SEASON_DAYS]
+    if len(near) < MIN_SEASON or near.max() < 1.0:      # too few days, or a season without fire: use every stored day
+        near = tot
+    return float(np.searchsorted(np.sort(near), exp, side="right") / len(near))
 
 
 def risk(date: str) -> dict | None:
@@ -80,10 +113,11 @@ def risk(date: str) -> dict | None:
         mode = "issued" if len(modes.get("issued", [])) == len(data.LEADS) else "perfect"
         ls = modes[mode]
         exp = float(sum(x[1] for x in ls))
-        h = hist.get(name)
-        pct = float(np.searchsorted(h, exp, side="right") / len(h)) if h is not None and len(h) and h[-1] >= 1.0 else None
+        pct = _pct(hist.get(name), day, exp)
+        area = _area_km2().get(name)
         known = all(x[3] is not None for x in ls) and len(ls) == len(data.LEADS)
         out.append({"name": name, "expected": exp, "pct": pct, "score": regions.score(exp, pct), "active": int(act.get(name) or 0),
+                    "area_km2": area, "density": exp / area * 1000 if area else None,
                     "burned": int(sum(x[3] for x in ls)) if known else None, "weather": mode,
                     "alert_days": int(sum(x[2] for x in ls)), "by_lead": [round(float(x[1]), 2) for x in ls]})
     complete = dt.date.fromisoformat(day) + dt.timedelta(days=max(data.LEADS)) <= dt.date.fromisoformat(last)
