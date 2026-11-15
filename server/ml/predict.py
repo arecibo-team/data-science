@@ -15,12 +15,13 @@ _data: tuple[tuple, features.Data | None] | None = None
 _labels: tuple[int, int, np.ndarray] | None = None
 
 
-def _label_mask(d: features.Data, horizon: int) -> np.ndarray:
-    """label_mask is big (cells x days), so keep the last one."""
+def _truth_mask(d: features.Data, horizon: int) -> np.ndarray:
+    """What really happened: confirmed fires (the UI's COMMON layer), whatever channel the model was trained on.
+    The mask is big (cells x days), so keep the last one."""
     global _labels
     if _labels and _labels[0] == id(d) and _labels[1] == horizon:
         return _labels[2]
-    m = features.label_mask(d, horizon)
+    m = features.label_mask(d, horizon, d.C)
     _labels = (id(d), horizon, m)
     return m
 
@@ -70,10 +71,10 @@ def forecast(date: str) -> dict | None:
         X = features.select(X, p.get("features"))
         prob = train.calibrate(_model(run).predict(X), p["neg_keep"]) if len(pos) else np.zeros(0)
         day = int(di[0]) if len(di) else min(max(d.day_index(date), 0), d.n_days - 1)
-        lab = _label_mask(d, p["horizon"])[:, day] if day + p["horizon"] < d.n_days else None
+        lab = _truth_mask(d, p["horizon"])[:, day] if day + p["horizon"] < d.n_days else None
         known = day + p["horizon"] < d.n_days
         if not known:   # partial window: count what is in the data so far
-            cum = d.Y[d.cand][:, day + 1:].sum(axis=1)
+            cum = d.C[d.cand][:, day + 1:].sum(axis=1)
             lab = cum > 0
         floor = 0.5 * (run["metrics"] or {}).get("threshold", 0.04)   # show cells down to half the alert threshold
         sel = np.union1d(pos[prob >= floor], np.flatnonzero(lab)) if lab is not None else pos[prob >= floor]

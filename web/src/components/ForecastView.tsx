@@ -408,7 +408,7 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
             <input type="checkbox" checked={allDetections} onChange={(e) => setAllDetections(e.target.checked)} /> Include unconfirmed MODIS and VIIRS detections
           </label>
           <p className="muted small">
-            Model: dot colour is the predicted chance of a confirmed fire, pale at 0.1% to deep red at 100%; solid
+            Model: dot colour is the predicted chance of a fire seen by both MODIS and VIIRS (the model's target), pale at 0.1% to deep red at 100%; solid
             dots are over the alert threshold{forecast ? ` (${(forecast.threshold * 100).toFixed(0)}%)` : ""}.
             Real data, over the same {horizon} days: a blue ring where a confirmed fire (inside an EU incident) really happened{realKnown ? "" : "; those days are not in the data yet"}, over the heat map of those detections.
             A ring around a solid dot is a hit; a ring alone is a miss; a solid dot alone is a false alarm.
