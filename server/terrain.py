@@ -6,6 +6,9 @@ Static fuel proxies for the forecast model, stored in `terrain_cells`:
   ndvi_w                     Sentinel-2 winter 2023/24 greenness (low in snow or bare ground, high for evergreens)
 Rasters are fetched at 0.01 degrees (about 1 km) in 25 degree tiles and averaged per cell.
 
+Each finished tile is cached under CACHE_DIR, so a stopped run resumes at the next tile. terrain_cells is replaced
+only once every tile is cached.
+
 Needs CDSE_CLIENT_ID and CDSE_CLIENT_SECRET in .env (a Sentinel Hub OAuth client of the Copernicus Data Space
 Ecosystem). Without them the step is skipped.
 """
@@ -13,6 +16,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import time
 
 import numpy as np
@@ -29,6 +33,7 @@ PROCESS_URL = "https://sh.dataspace.copernicus.eu/api/v1/process"
 RES = 0.01
 TILE = 2500                      # pixels per side, the Process API limit
 COLS = ["elev", "relief", "slope", "ndvi_s", "ndmi_s", "ndvi_w"]
+CACHE_DIR = C.DATA_DIR / "terrain"
 
 DEM_SCRIPT = """//VERSION=3
 function setup() { return { input: ["DEM"], output: { bands: 1, sampleType: "FLOAT32" } }; }
@@ -41,6 +46,16 @@ function evaluatePixel(s) {
   if (bad) return [NaN, NaN];
   return [(s.B08 - s.B04) / (s.B08 + s.B04 + 1e-6), (s.B08 - s.B11) / (s.B08 + s.B11 + 1e-6)];
 }"""
+
+LAYERS = [
+    ("dem", {"type": "dem", "dataFilter": {"demInstance": "COPERNICUS_90"}, "processing": {"downsampling": "BILINEAR"}}, DEM_SCRIPT),
+    ("s2_summer", {"type": "sentinel-2-l2a", "dataFilter": {"timeRange": {"from": "2023-06-01T00:00:00Z", "to": "2023-08-31T23:59:59Z"},
+                                                           "mosaickingOrder": "leastCC", "maxCloudCoverage": 70},
+                   "processing": {"downsampling": "BILINEAR"}}, S2_SCRIPT),
+    ("s2_winter", {"type": "sentinel-2-l2a", "dataFilter": {"timeRange": {"from": "2023-12-01T00:00:00Z", "to": "2024-02-29T23:59:59Z"},
+                                                           "mosaickingOrder": "leastCC", "maxCloudCoverage": 70},
+                   "processing": {"downsampling": "BILINEAR"}}, S2_SCRIPT),
+]
 
 
 def credentials() -> tuple[str, str] | None:
@@ -96,6 +111,11 @@ def _tiles(bbox):
     return out
 
 
+def _tile_key(tile) -> str:
+    w, s, e, n = tile
+    return f"{w:.2f}_{s:.2f}_{e:.2f}_{n:.2f}"
+
+
 def _cell_means(arr: np.ndarray, tile, func=np.nanmean) -> dict[tuple[int, int], float]:
     """Mean per 0.1 degree cell of a (h, w) raster whose top-left is (W, N); cells are bin_day's r, c indices."""
     w, s, e, n = tile
@@ -120,46 +140,69 @@ def _slope_deg(dem: np.ndarray) -> np.ndarray:
     return np.degrees(np.arctan(np.hypot(dx, dy))).astype(np.float32)
 
 
+def _fetch_tile(cl: _Client, tile, should_stop):
+    """Cell values of one tile, or None when should_stop ends the work before the tile is complete."""
+    cells: dict[tuple[int, int], dict[str, float]] = {}
+    for name, data, script in LAYERS:
+        if should_stop():
+            return None
+        ras = cl.raster(tile, data, script)
+        log.info("terrain tile %s %s", tile, name)
+        if name == "dem":
+            dem = ras[0]
+            dem = np.where(dem < -500, np.nan, dem)
+            for key, f in (("elev", np.nanmean), ("relief", np.nanstd)):
+                for cell, v in _cell_means(dem, tile, f).items():
+                    cells.setdefault(cell, {})[key] = v
+            for cell, v in _cell_means(_slope_deg(np.nan_to_num(dem)), tile).items():
+                cells.setdefault(cell, {})["slope"] = v
+        elif name == "s2_summer":
+            for cell, v in _cell_means(ras[0], tile).items():
+                cells.setdefault(cell, {})["ndvi_s"] = v
+            for cell, v in _cell_means(ras[1], tile).items():
+                cells.setdefault(cell, {})["ndmi_s"] = v
+        else:
+            for cell, v in _cell_means(ras[0], tile).items():
+                cells.setdefault(cell, {})["ndvi_w"] = v
+    return cells
+
+
+def _save(path, cells) -> None:
+    keys = np.array(list(cells), dtype=np.int32).reshape(-1, 2)
+    vals = np.array([[cells[k].get(c, np.nan) for c in COLS] for k in cells], dtype=np.float32).reshape(-1, len(COLS))
+    tmp = path.parent / (path.name + ".tmp.npz")
+    np.savez_compressed(tmp, keys=keys, vals=vals)
+    os.replace(tmp, path)
+
+
+def _load(path) -> dict[tuple[int, int], dict[str, float | None]]:
+    with np.load(path) as z:
+        keys, vals = z["keys"].tolist(), z["vals"].tolist()
+    return {(r, c): {k: (None if x != x else x) for k, x in zip(COLS, v)} for (r, c), v in zip(keys, vals)}
+
+
 def run(should_stop=lambda: False) -> int:
-    """Fetch and store terrain_cells for all of Europe. Returns cells written."""
+    """Fetch and store terrain_cells for all of Europe, one tile at a time. Returns cells written (0 when stopped)."""
     cred = credentials()
     if not cred:
         raise RuntimeError("CDSE_CLIENT_ID / CDSE_CLIENT_SECRET missing in .env")
     cl = _Client(*cred)
-    bbox = C.EUROPE_BBOX
-    cells: dict[tuple[int, int], dict[str, float]] = {}
-    layers = [
-        ("dem", {"type": "dem", "dataFilter": {"demInstance": "COPERNICUS_90"}, "processing": {"downsampling": "BILINEAR"}}, DEM_SCRIPT),
-        ("s2_summer", {"type": "sentinel-2-l2a", "dataFilter": {"timeRange": {"from": "2023-06-01T00:00:00Z", "to": "2023-08-31T23:59:59Z"},
-                                                               "mosaickingOrder": "leastCC", "maxCloudCoverage": 70},
-                       "processing": {"downsampling": "BILINEAR"}}, S2_SCRIPT),
-        ("s2_winter", {"type": "sentinel-2-l2a", "dataFilter": {"timeRange": {"from": "2023-12-01T00:00:00Z", "to": "2024-02-29T23:59:59Z"},
-                                                               "mosaickingOrder": "leastCC", "maxCloudCoverage": 70},
-                       "processing": {"downsampling": "BILINEAR"}}, S2_SCRIPT),
-    ]
-    for tile in _tiles(bbox):
-        for name, data, script in layers:
-            if should_stop():
-                return len(cells)
-            ras = cl.raster(tile, data, script)
-            log.info("terrain tile %s %s", tile, name)
-            if name == "dem":
-                dem = ras[0]
-                dem = np.where(dem < -500, np.nan, dem)
-                for key, f in (("elev", np.nanmean), ("relief", np.nanstd)):
-                    for cell, v in _cell_means(dem, tile, f).items():
-                        cells.setdefault(cell, {})[key] = v
-                for cell, v in _cell_means(_slope_deg(np.nan_to_num(dem)), tile).items():
-                    cells.setdefault(cell, {})["slope"] = v
-            elif name == "s2_summer":
-                for cell, v in _cell_means(ras[0], tile).items():
-                    cells.setdefault(cell, {})["ndvi_s"] = v
-                for cell, v in _cell_means(ras[1], tile).items():
-                    cells.setdefault(cell, {})["ndmi_s"] = v
-            else:
-                for cell, v in _cell_means(ras[0], tile).items():
-                    cells.setdefault(cell, {})["ndvi_w"] = v
-    rows = [(r, c, *(vals.get(k) for k in COLS)) for (r, c), vals in cells.items()]
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    tiles = _tiles(C.EUROPE_BBOX)
+    for tile in tiles:
+        path = CACHE_DIR / f"{_tile_key(tile)}.npz"
+        if path.exists():
+            continue
+        if should_stop():
+            return 0
+        cells = _fetch_tile(cl, tile, should_stop)
+        if cells is None:
+            return 0
+        _save(path, cells)
+    merged: dict[tuple[int, int], dict[str, float | None]] = {}
+    for tile in tiles:
+        merged.update(_load(CACHE_DIR / f"{_tile_key(tile)}.npz"))
+    rows = [(r, c, *(vals.get(k) for k in COLS)) for (r, c), vals in merged.items()]
     with db.session() as con:
         con.execute("DELETE FROM terrain_cells")
         con.executemany(f"INSERT INTO terrain_cells VALUES (?,?,{','.join('?' * len(COLS))})", rows)

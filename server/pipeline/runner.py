@@ -12,6 +12,10 @@ step it depends on. So:
 Dependencies are `deps` (must succeed, and part of the fingerprint) or `soft` (run order and reset
 cascade only). A step whose inputs are content-hashed in its own params, such as `tag`, lists the
 steps that produce those inputs as `soft`, so a failed network step does not block it.
+
+A `resumable` step takes a `should_stop` callable and works in chunks it keeps across runs. Each pass gives it
+`PIPELINE_SLICE_S` seconds; when the slice ends it is recorded as `paused`, the later steps run, and another pass
+continues it. A restart that finds a resumable step `running` records it as `paused` too, not `failed`.
 """
 from __future__ import annotations
 
@@ -41,9 +45,10 @@ class Step:
     name: str
     title: str
     plan: Callable[[], Plan]
-    run: Callable[[], int | None]
+    run: Callable[..., int | None]      # called as run(should_stop) when resumable, else run()
     deps: tuple[str, ...] = ()
     soft: tuple[str, ...] = ()
+    resumable: bool = False
 
 
 STEPS: list[Step] = []
@@ -100,9 +105,11 @@ def status() -> list[dict]:
                 done = con.execute("SELECT 1 FROM pipeline_steps WHERE step=? AND fingerprint=? AND status='done'",
                                    (s.name, fp)).fetchone()
                 state = "up_to_date" if done else ("failed" if last and last["status"] == "failed" and last["fingerprint"] == fp else "pending")
+            paused = last is not None and last["status"] == "paused" and state == "pending"
             rows.append({
                 "step": s.name, "title": s.title, "state": state,
-                "reason": p.skip or (f"skipped by PIPELINE_SKIP" if s.name in settings.SKIP_STEPS else None),
+                "reason": p.skip or (f"skipped by PIPELINE_SKIP" if s.name in settings.SKIP_STEPS else
+                                     "paused; continues on the next pass" if paused else None),
                 "last": dict(last) if last else None,
             })
         return rows
@@ -121,8 +128,23 @@ def reset_step(name: str, cascade: bool = True) -> list[str]:
     return names
 
 
+def _recover_interrupted() -> None:
+    """Rows left `running` by a process that died: resumable steps are paused, the rest failed."""
+    resumable = [s.name for s in STEPS if s.resumable]
+    with db.session() as con:
+        if resumable:
+            con.execute(f"UPDATE pipeline_steps SET status='paused', finished_at=?, message=? "
+                        f"WHERE status='running' AND step IN ({','.join('?' * len(resumable))})",
+                        (_now(), "interrupted by restart; continues on the next pass", *resumable))
+        con.execute("UPDATE pipeline_steps SET status='failed', finished_at=?, message='interrupted' "
+                    "WHERE status='running'", (_now(),))
+
+
 def run_pending(only: list[str] | None = None) -> dict[str, str]:
-    """Run every step that is not up to date, in dependency order. Returns step -> outcome."""
+    """Run every step that is not up to date, in dependency order. Returns step -> outcome of the last pass.
+
+    While a resumable step is paused, another pass follows, so the work finishes without a restart.
+    """
     # One pass at a time across processes (the server and `python -m server run` share the database).
     lock = open(settings.DB_PATH + ".lock", "w")
     try:
@@ -131,34 +153,40 @@ def run_pending(only: list[str] | None = None) -> dict[str, str]:
         lock.close()
         log.info("pipeline already running in another process")
         return {}
-    outcome: dict[str, str] = {}
     try:
         db.init_db()
-        with db.session() as con:  # a crash in an earlier process left these open
-            con.execute("UPDATE pipeline_steps SET status='failed', finished_at=?, message='interrupted' "
-                        "WHERE status='running'", (_now(),))
-        for s in STEPS:
-            if only and s.name not in only:
-                continue
-            if s.name in settings.SKIP_STEPS:
-                outcome[s.name] = "skipped (PIPELINE_SKIP)"
-                continue
-            blocked = [d for d in s.deps if outcome.get(d, "").split(" ")[0] in ("failed", "blocked", "skipped")
-                       or _latest_done_safe(d) is None]
-            if blocked:
-                outcome[s.name] = f"blocked by {', '.join(blocked)}"
-                log.warning("%s: blocked by %s", s.name, ", ".join(blocked))
-                continue
-            p = s.plan()
-            if p.skip:
-                outcome[s.name] = f"skipped ({p.skip})"
-                log.info("%s: skipped (%s)", s.name, p.skip)
-                continue
-            outcome[s.name] = _run_one(s, p)
-        return outcome
+        _recover_interrupted()
+        while True:
+            outcome = _pass(only)
+            if "paused" not in outcome.values():
+                return outcome
+            log.info("pass ended with a paused step; continuing")
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
+
+
+def _pass(only: list[str] | None) -> dict[str, str]:
+    outcome: dict[str, str] = {}
+    for s in STEPS:
+        if only and s.name not in only:
+            continue
+        if s.name in settings.SKIP_STEPS:
+            outcome[s.name] = "skipped (PIPELINE_SKIP)"
+            continue
+        blocked = [d for d in s.deps if outcome.get(d, "").split(" ")[0] in ("failed", "blocked", "skipped", "paused")
+                   or _latest_done_safe(d) is None]
+        if blocked:
+            outcome[s.name] = f"blocked by {', '.join(blocked)}"
+            log.warning("%s: blocked by %s", s.name, ", ".join(blocked))
+            continue
+        p = s.plan()
+        if p.skip:
+            outcome[s.name] = f"skipped ({p.skip})"
+            log.info("%s: skipped (%s)", s.name, p.skip)
+            continue
+        outcome[s.name] = _run_one(s, p)
+    return outcome
 
 
 def _latest_done_safe(name: str) -> int | None:
@@ -182,9 +210,16 @@ def _run_one(s: Step, p: Plan) -> str:
         con.commit()
         row_id, t0 = cur.lastrowid, time.monotonic()
         log.info("%s: running", s.name)
+        hit = [False]
+
+        def should_stop() -> bool:
+            if time.monotonic() >= t0 + settings.PIPELINE_SLICE_S:
+                hit[0] = True
+            return hit[0]
+
         try:
-            rows = s.run()
-            status_, msg = "done", None
+            rows = s.run(should_stop) if s.resumable else s.run()
+            status_, msg = ("paused", "time slice used; continues on the next pass") if hit[0] else ("done", None)
         except Exception as exc:  # recorded, and the pass continues with independent steps
             log.exception("%s failed", s.name)
             rows, status_, msg = None, "failed", f"{type(exc).__name__}: {exc}"[:500]

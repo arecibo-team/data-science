@@ -209,13 +209,15 @@ def active_mask(d: Data) -> np.ndarray:
     return out
 
 
-def label_mask(d: Data, horizon: int) -> np.ndarray:
-    """(n_cand, T) bool: a fire in D+1..D+horizon. Days without a full horizon are False."""
+def label_mask(d: Data, horizon: int, Y: np.ndarray | None = None) -> np.ndarray:
+    """(n_cand, T) bool: a fire in D+1..D+horizon, in channel Y (default: the training label). Days without a full
+    horizon are False."""
+    Y = d.Y if Y is None else Y
     out = np.empty((len(d.cand), d.n_days), bool)
     idx = np.arange(d.n_days)
     hi = np.minimum(idx + horizon + 1, d.n_days)
     for a in range(0, len(d.cand), 20000):
-        cum = _cum(d.Y[d.cand[a:a + 20000]])
+        cum = _cum(Y[d.cand[a:a + 20000]])
         out[a:a + 20000] = (cum[:, hi] - cum[:, idx + 1]) > 0
     out[:, d.n_days - horizon:] = False
     return out

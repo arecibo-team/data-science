@@ -158,8 +158,11 @@ const riskValue = (c: CountryRisk, mode: RiskMode): number => {
   return Math.min(1, Math.max(0, t));
 };
 
+/** Countries at war: their fires are often artificial (shelling, burning fields near the front), so they can be left out. */
+const WAR_COUNTRIES = new Set(["Ukraine", "Russia"]);
+
 /** Layer 0: every country coloured by its risk, under the cell layers. */
-function CountryLayer({ regions, risk, mode }: { regions: GeoJSON.FeatureCollection | null; risk: RiskDay | null; mode: RiskMode }) {
+function CountryLayer({ regions, risk, mode, skipWar }: { regions: GeoJSON.FeatureCollection | null; risk: RiskDay | null; mode: RiskMode; skipWar: boolean }) {
   const map = useMap();
   useEffect(() => {
     if (!regions || !risk) return;
@@ -170,6 +173,7 @@ function CountryLayer({ regions, risk, mode }: { regions: GeoJSON.FeatureCollect
     }
     const layer = L.geoJSON(regions, {
       pane: "risk",
+      filter: (f) => !(skipWar && WAR_COUNTRIES.has(f?.properties?.name)),
       style: (f) => {
         const c = by.get(f?.properties?.name);
         return c ? { color: "#fff", weight: 1, fillColor: riskColor(riskValue(c, mode)), fillOpacity: 0.55 }
@@ -188,7 +192,7 @@ function CountryLayer({ regions, risk, mode }: { regions: GeoJSON.FeatureCollect
       },
     }).addTo(map);
     return () => { layer.remove(); };
-  }, [map, regions, risk, mode]);
+  }, [map, regions, risk, mode, skipWar]);
   return null;
 }
 
@@ -245,11 +249,11 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   const [showReal, setShowReal] = useState(true);
   const [showCountries, setShowCountries] = useState(true);
   const [riskMode, setRiskMode] = useState<RiskMode>("own");
+  const [skipWar, setSkipWar] = useState(false);
   const [regions, setRegions] = useState<GeoJSON.FeatureCollection | null>(null);
   const [risk, setRisk] = useState<RiskDay | null>(null);
   const [onlyAlerts, setOnlyAlerts] = useState(false);
   const [split, setSplit] = useState(false);
-  const [realWindow, setRealWindow] = useState<"next" | "day">("next");
   const [allDetections, setAllDetections] = useState(false);
   const day = days[idx];
 
@@ -311,10 +315,10 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
     return t;
   }, [forecast]);
 
-  // The real-data heat tiles cover the days the prediction is about, or just the selected day.
+  // The real-data heat tiles and the rings cover the same days: the days the prediction is about.
   const horizon = forecast?.horizon ?? run?.params.horizon ?? 3;
-  const realFrom = realWindow === "next" ? addDays(day, 1) : day;
-  const realTo = realWindow === "next" ? addDays(day, horizon) : day;
+  const realFrom = addDays(day, 1);
+  const realTo = addDays(day, horizon);
   const realKnown = realFrom <= last;
   const realTiles = realKnown ? tileUrl(realFrom, realTo > last ? last : realTo, allDetections ? 7 : 4, generatedUtc) : null;
   const soilLayer = soil.on ? soilUrl(soil.cls) : null;
@@ -322,7 +326,7 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   const modelMap = (
     <MapView key="model" visible={null} tileUrl={null} incidents={[]} muted soilUrl={soilLayer} onPick={noop} onView={noop}>
       {split && <MapSync group="forecast" />}
-      {showCountries && <CountryLayer regions={regions} risk={risk} mode={riskMode} />}
+      {showCountries && <CountryLayer regions={regions} risk={risk} mode={riskMode} skipWar={skipWar} />}
       <ModelLayer forecast={forecast} onlyAlerts={onlyAlerts} />
     </MapView>
   );
@@ -334,7 +338,7 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   );
   const overlayMap = (
     <MapView key="overlay" visible={null} tileUrl={showReal ? realTiles : null} incidents={[]} muted soilUrl={soilLayer} onPick={noop} onView={noop}>
-      {showCountries && <CountryLayer regions={regions} risk={risk} mode={riskMode} />}
+      {showCountries && <CountryLayer regions={regions} risk={risk} mode={riskMode} skipWar={skipWar} />}
       {showModel && <ModelLayer forecast={forecast} onlyAlerts={onlyAlerts} />}
       {showReal && <RealLayer forecast={forecast} />}
     </MapView>
@@ -400,20 +404,13 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
           <label className="check">
             <input type="checkbox" checked={onlyAlerts} onChange={(e) => setOnlyAlerts(e.target.checked)} /> Only cells over the alert threshold
           </label>
-          <label>
-            Real data covers
-            <select value={realWindow} onChange={(e) => setRealWindow(e.target.value as "next" | "day")}>
-              <option value="next">The days the prediction is about</option>
-              <option value="day">The selected day only</option>
-            </select>
-          </label>
           <label className="check">
             <input type="checkbox" checked={allDetections} onChange={(e) => setAllDetections(e.target.checked)} /> Include unconfirmed MODIS and VIIRS detections
           </label>
           <p className="muted small">
-            Model: dot colour is the predicted chance of a confirmed fire, pale at 0.1% to deep red at 100%; solid
+            Model: dot colour is the predicted chance of a fire seen by both MODIS and VIIRS (the model's target), pale at 0.1% to deep red at 100%; solid
             dots are over the alert threshold{forecast ? ` (${(forecast.threshold * 100).toFixed(0)}%)` : ""}.
-            Real data: a blue ring where a confirmed fire (inside an EU incident) really happened{realKnown ? "" : "; those days are not in the data yet"}, over the heat map of those detections.
+            Real data, over the same {horizon} days: a blue ring where a confirmed fire (inside an EU incident) really happened{realKnown ? "" : "; those days are not in the data yet"}, over the heat map of those detections.
             A ring around a solid dot is a hit; a ring alone is a miss; a solid dot alone is a false alarm.
           </p>
         </fieldset>
@@ -421,6 +418,9 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
         {risk && showCountries && (
           <fieldset>
             <legend>Country risk, next {risk.horizon} days</legend>
+            <label className="check">
+              <input type="checkbox" checked={skipWar} onChange={(e) => setSkipWar(e.target.checked)} /> Leave out Ukraine and Russia (war fires)
+            </label>
             <label>
               Colour countries
               <select value={riskMode} onChange={(e) => setRiskMode(e.target.value as RiskMode)}>
@@ -433,7 +433,8 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
               {riskMode === "own" ? <><span>OK</span><span>Really bad</span></> : <><span>0.01 per 1,000 km²</span><span>1 per 1,000 km²</span></>}
             </div>
             <ul className="risk-list">
-              {[...risk.countries].map((c) => ({ c, v: riskValue(c, riskMode) })).filter((x) => x.v >= 0.15)
+              {risk.countries.filter((c) => !(skipWar && WAR_COUNTRIES.has(c.name)))
+                .map((c) => ({ c, v: riskValue(c, riskMode) })).filter((x) => x.v >= 0.15)
                 .sort((a, b) => b.v - a.v).slice(0, 8).map(({ c, v }) => (
                 <li key={c.name}>
                   <span className="dot" style={{ background: riskColor(v) }} /> {c.name}
@@ -442,7 +443,7 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
                     {c.burned !== null ? ` · ${c.burned} real` : ""}</span>
                 </li>
               ))}
-              {!risk.countries.some((c) => riskValue(c, riskMode) >= 0.15) && <li className="muted">Every country is at normal or low risk.</li>}
+              {!risk.countries.some((c) => !(skipWar && WAR_COUNTRIES.has(c.name)) && riskValue(c, riskMode) >= 0.15) && <li className="muted">Every country is at normal or low risk.</li>}
             </ul>
             <p className="muted small">
               {riskMode === "own"

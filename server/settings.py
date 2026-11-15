@@ -26,6 +26,8 @@ S2_WORKERS = int(os.environ.get("FIRMS_S2_WORKERS", "4"))
 SKIP_STEPS = {s.strip() for s in os.environ.get("PIPELINE_SKIP", "").split(",") if s.strip()}
 # Set PIPELINE_ON_START=0 to start the server without running the pipeline.
 RUN_ON_START = os.environ.get("PIPELINE_ON_START", "1") != "0"
+# A resumable step (weather, terrain) runs for at most this many minutes per pass, then pauses and the next steps run.
+PIPELINE_SLICE_S = float(os.environ.get("PIPELINE_SLICE_MIN", "20")) * 60
 
 # Above this many detections in the view, the API answers with grid cells instead of points.
 MAX_POINTS = int(os.environ.get("FIRMS_MAX_POINTS", "60000"))
@@ -48,8 +50,9 @@ WEATHER = os.environ.get("FIRMS_WEATHER", "1") != "0"
 HORIZON = int(os.environ.get("FIRMS_HORIZON", "3"))
 TRAIN_END = os.environ.get("FIRMS_TRAIN_END", "2025-12-31")
 CHECKPOINT_EVERY = int(os.environ.get("FIRMS_CHECKPOINT_EVERY", "25"))
-# Label of the model: "both" = a fire seen by MODIS and VIIRS (consistent for every year since 2012, the default),
-# "confirmed" = the UI's COMMON layer (a detection inside an EU incident; incident data only reaches back to 2024).
+# Label the model is trained to predict: "both" = a fire seen by MODIS and VIIRS (every year since 2012, the default).
+# "confirmed" = the UI's COMMON layer (a detection inside an EU incident; only reaches back to 2024) trains far too
+# little data to be useful. The forecast page always scores the model against confirmed fires.
 LABEL = os.environ.get("FIRMS_LABEL", "both")
 # Parallel NASA POWER requests of the weather step. Lower it if the service answers 429.
 WEATHER_WORKERS = int(os.environ.get("FIRMS_WEATHER_WORKERS", "4"))

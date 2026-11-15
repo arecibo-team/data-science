@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS pipeline_steps (
     step         TEXT NOT NULL,
     fingerprint  TEXT NOT NULL,
     params       TEXT NOT NULL DEFAULT '{}',
-    status       TEXT NOT NULL CHECK (status IN ('running', 'done', 'failed')),
+    status       TEXT NOT NULL CHECK (status IN ('running', 'done', 'failed', 'paused')),
     started_at   TEXT NOT NULL,
     finished_at  TEXT,
     duration_s   REAL,
@@ -210,6 +210,13 @@ def init_db(path: str | None = None) -> None:
         cols = {r[1] for r in con.execute("PRAGMA table_info(bin_day)")}
         if cols and "hi" not in cols:  # older layout: regenerable, rebuilt by the stats step
             con.execute("DROP TABLE bin_day")
+        ps = con.execute("SELECT sql FROM sqlite_master WHERE name='pipeline_steps'").fetchone()
+        if ps and "'paused'" not in ps[0]:  # the status CHECK predates 'paused': rebuild the table, keep its rows
+            con.executescript("DROP INDEX IF EXISTS ix_steps_step;"
+                              "ALTER TABLE pipeline_steps RENAME TO pipeline_steps_old;")
+            con.executescript(SCHEMA)
+            con.execute("INSERT INTO pipeline_steps SELECT * FROM pipeline_steps_old")
+            con.execute("DROP TABLE pipeline_steps_old")
         con.executescript(SCHEMA)
         wcols = {r[1] for r in con.execute("PRAGMA table_info(weather_grid)")}
         for col in ("t2mx", "wsx"):          # added after the first weather runs; old rows are refetched by the weather step
