@@ -51,6 +51,11 @@ def _get_json(url: str, params: dict | None = None, retries: int = 3) -> dict:
             r = requests.get(url, params=params, timeout=TIMEOUT, headers={"User-Agent": UA})
             r.raise_for_status()
             return r.json()
+        except requests.HTTPError as exc:
+            last = exc
+            if exc.response is not None and 400 <= exc.response.status_code < 500 and exc.response.status_code != 429:
+                break
+            time.sleep(2 * (attempt + 1))
         except (requests.RequestException, ValueError) as exc:  # network error or non-JSON body
             last = exc
             time.sleep(2 * (attempt + 1))

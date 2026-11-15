@@ -113,6 +113,25 @@ Unmatched detections are kept but marked unconfirmed.
 and NRT for the most recent days. The FIRMS API accepts at most 5 days per request, so the fetcher
 splits ranges into 5-day windows.
 
+### Imports, exports and seeding without a key
+
+- `POST /api/import?name=<file>` with a FIRMS CSV as the body (MODIS or VIIRS, S-NPP, NOAA-20 or NOAA-21, SP or NRT,
+  from the area API, the archive download tool or the yearly country files). Rows are split by source into
+  `data/raw/<SOURCE>/import_<name>_<hash>.csv` and the pipeline starts. Importing the same file again replaces it.
+- `GET /api/export.csv?from=&to=&west=&south=&east=&north=[&sensor=MODIS|VIIRS]` streams the harmonized detections:
+  position, time, sensor, platform, product, day/night, confidence, FRP, brightness, cross-sensor status, cluster and
+  incident.
+- `GET /api/summary?from=&to=&...` counts by platform, match status and confidence, per-day MODIS/VIIRS counts, and
+  the date span of the whole store. `GET /api/sources` lists the raw files.
+- `python -m server seed --years 2024,2025` fills `data/raw` from the yearly FIRMS country archives of the EU-27
+  (no MAP_KEY needed); `--from-dir <folder>` does the same from CSVs on disk, `--if-empty` only when `data/raw` is empty.
+
+### Docker
+
+`Dockerfile.server` builds the FIRMS server (seeds on first start, then serves on port 8002, data in `/app/data`).
+`amber-index/Dockerfile` builds the Amber API (port 8001). Both are wired together with the frontend in the
+`arecibo` repository's `docker-compose.yml`.
+
 ## Outputs
 
 | Path | Contents |

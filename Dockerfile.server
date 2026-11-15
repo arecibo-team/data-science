@@ -1,0 +1,19 @@
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libexpat1 curl && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /usr/local/bin/uv
+WORKDIR /app
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv UV_LINK_MODE=copy PATH="/opt/venv/bin:$PATH"
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+COPY firms ./firms
+COPY server ./server
+COPY context-data ./context-data
+
+ENV PIPELINE_SKIP=fetch,sentinel2,terrain,weather,forecast \
+    FIRMS_SEED_YEARS=2024,2025 \
+    FIRMS_TILE_BG_MAX_ZOOM=6
+VOLUME /app/data
+EXPOSE 8002
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s CMD curl -fs http://127.0.0.1:8002/api/pipeline || exit 1
+CMD ["sh", "-c", "python -m server seed --if-empty --years \"$FIRMS_SEED_YEARS\" && exec python -m server serve --host 0.0.0.0 --port 8002"]
