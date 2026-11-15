@@ -64,8 +64,10 @@ class FireData:
         med = float(np.median(base))
         return {"ratio": round(now / max(med, 1.0), 1), "cell_days": round(now), "median": round(med)}
 
-    def active_fires(self, d: date, min_detections: int = 10) -> list[dict]:
-        ev = self.events[(self.events["start_d"] <= d) & (self.events["end_d"] >= d)]
+    def active_fires(self, d: date, min_detections: int = 10, since: date | None = None, limit: int = 300) -> list[dict]:
+        ev = self.events[(self.events["start_d"] <= d) & (self.events["end_d"] >= (since or d))]
+        if since:
+            ev = ev.nlargest(limit, "detections")
         out = []
         for e in ev.itertuples():
             upto = {k: v for k, v in e.daily.items() if k <= d.isoformat()}

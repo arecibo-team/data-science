@@ -421,3 +421,11 @@ def test_neighbours_are_in_the_fire_record(client):
     area = client.get("/area", params={"country": "UA", "start": "2022-03-01", "end": "2022-03-31"})
     assert area.status_code == 200
     assert area.json()["summary"]["detections"] > 1000
+
+
+def test_replay_lists_fires_of_an_interval(client):
+    day = client.get("/replay", params={"date": "2021-08-20"}).json()
+    span = client.get("/replay", params={"date": "2021-08-20", "start": "2021-08-01"}).json()
+    assert span["counts"]["all"] > day["counts"]["all"]
+    assert any(f["name"] == "Roviés" for f in span["fires"])
+    assert [c["power"] for c in span["countries"]] == [c["power"] for c in day["countries"]]

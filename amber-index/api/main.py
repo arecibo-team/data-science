@@ -755,11 +755,19 @@ class ReplayResponse(BaseModel):
 
 
 @app.get("/replay", response_model=ReplayResponse)
-def replay(date: str | None = Query(None, description="YYYY-MM-DD, default 2021-08-04")):
+def replay(date: str | None = Query(None, description="YYYY-MM-DD, default 2021-08-04"),
+           start: str | None = Query(None, description="list every fire that burned between this day and date")):
     fd = _fires()
     d = _replay_date(date)
     ref = d.replace(day=1)
     now, fires = _scenario_on(d)
+    if start:
+        try:
+            since = Date.fromisoformat(start)
+        except ValueError:
+            raise HTTPException(422, "start must be YYYY-MM-DD")
+        if since < d:
+            fires = fd.active_fires(d, since=since)
     before, _ = _scenario_on(ref)
     counts = {"all": len(fires), "above": sum(f["status"] == "above" for f in fires), "watch": sum(f["status"] == "watch" for f in fires)}
     per = pd.Series([f["iso2"] for f in fires]).value_counts() if fires else pd.Series(dtype=int)
