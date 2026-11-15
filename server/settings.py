@@ -26,6 +26,8 @@ S2_WORKERS = int(os.environ.get("FIRMS_S2_WORKERS", "4"))
 SKIP_STEPS = {s.strip() for s in os.environ.get("PIPELINE_SKIP", "").split(",") if s.strip()}
 # Set PIPELINE_ON_START=0 to start the server without running the pipeline.
 RUN_ON_START = os.environ.get("PIPELINE_ON_START", "1") != "0"
+# A resumable step (weather, terrain) runs for at most this many minutes per pass, then pauses and the next steps run.
+PIPELINE_SLICE_S = float(os.environ.get("PIPELINE_SLICE_MIN", "20")) * 60
 
 # Above this many detections in the view, the API answers with grid cells instead of points.
 MAX_POINTS = int(os.environ.get("FIRMS_MAX_POINTS", "60000"))

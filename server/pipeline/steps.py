@@ -210,8 +210,8 @@ def _weather_plan() -> Plan:
     return Plan({"start": settings.FETCH_START, "end": weather_grid.end_date()})
 
 
-def _weather_run() -> int:
-    return weather_grid.run(settings.FETCH_START)
+def _weather_run(should_stop=lambda: False) -> int:
+    return weather_grid.run(settings.FETCH_START, should_stop=should_stop)
 
 
 def _terrain_plan() -> Plan:
@@ -221,9 +221,9 @@ def _terrain_plan() -> Plan:
     return Plan({"layers": "dem90,s2summer2023,s2winter2023", "res": terrain.RES})
 
 
-def _terrain_run() -> int:
+def _terrain_run(should_stop=lambda: False) -> int:
     from .. import terrain
-    return terrain.run()
+    return terrain.run(should_stop)
 
 
 def _forecast_plan() -> Plan:
@@ -246,7 +246,7 @@ STEPS.extend([
     Step("tag", "Tag detections with incidents", _tag_plan, _tag_run, deps=("harmonize",), soft=("ems", "sentinel2", "effis")),
     Step("stats", "Day, cell and incident counts", _stats_plan, _stats_run, deps=("tag",)),
     Step("context", "Embed context-data (soil)", _context_plan, _context_run),
-    Step("weather", "Daily weather on a 1 degree grid", _weather_plan, _weather_run, soft=("stats",)),
-    Step("terrain", "Elevation and vegetation per cell", _terrain_plan, _terrain_run),
+    Step("weather", "Daily weather on a 1 degree grid", _weather_plan, _weather_run, soft=("stats",), resumable=True),
+    Step("terrain", "Elevation and vegetation per cell", _terrain_plan, _terrain_run, resumable=True),
     Step("forecast", "Weather forecast for the next days", _forecast_plan, _forecast_run, soft=("weather",)),
 ])
