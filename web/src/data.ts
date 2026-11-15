@@ -264,11 +264,22 @@ export interface CountryRisk {
   /** 0 (green) to 1 (red). */
   score: number;
   active: number;
-  /** Cells that really burned in the window, null while the window is not complete. */
+  /** Confirmed cells that really burned in the window, null while the window is not complete. */
   burned: number | null;
   /** Expected cells per 1,000 km2 of the country's surface; absent from the older fallback. */
   density?: number | null;
   area_km2?: number | null;
+  /** The same measure on the confirmed fires that really happened; null when none of the window is in the data yet. */
+  real?: RealRisk | null;
+}
+export interface RealRisk {
+  /** Confirmed cells in the leads that are in the data so far. */
+  expected: number;
+  pct: number | null;
+  score: number;
+  density: number | null;
+  /** False while some of the window's days are not in the data yet. */
+  complete: boolean;
 }
 export interface RiskDay {
   feature_date: string;
