@@ -129,7 +129,8 @@ splits ranges into 5-day windows.
 ### Docker
 
 `Dockerfile.server` builds the FIRMS server (seeds on first start, then serves on port 8002, data in `/app/data`).
-`amber-index/Dockerfile` builds the Amber API (port 8001). Both are wired together with the frontend in the
+`FIRMS_EFFIS_FROM` (default 2016) sets the first year of EFFIS burnt areas; EFFIS is processed one year at a time, and
+the Docker stack starts at 2024 to keep memory low. `amber-index/Dockerfile` builds the Amber API (port 8001). Both are wired together with the frontend in the
 `arecibo` repository's `docker-compose.yml`.
 
 ## Outputs
