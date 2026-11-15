@@ -112,12 +112,13 @@ def _ems_run() -> int:
 
 
 def _effis_plan() -> Plan:
-    return Plan({"on": settings.today()})
+    from firms import effis
+    return Plan({"on": settings.today(), "from": effis.FIRST_YEAR})
 
 
 def _effis_run() -> int:
     from firms import effis
-    feats = effis.normalize(effis.fetch())
+    feats = effis.fetch_normalized()
     with db.session() as con:
         return store.replace_incidents(con, "EFFIS", feats)
 

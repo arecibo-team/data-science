@@ -14,7 +14,9 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import os
 import time
+from collections.abc import Iterator
 
 import requests
 from shapely.geometry import mapping, shape
@@ -25,7 +27,7 @@ log = logging.getLogger("firms.effis")
 
 URL = "https://maps.effis.emergency.copernicus.eu/effis"
 RAW = C.INCIDENTS_DIR / "raw" / "effis"
-FIRST_YEAR = 2016
+FIRST_YEAR = int(os.environ.get("FIRMS_EFFIS_FROM", "2016"))
 BUFFER_KM = 0.5
 SLACK_DAYS = 1
 SIMPLIFY = 0.0003            # degrees, about 30 m: keeps matching exact enough and the DB small
@@ -48,16 +50,26 @@ def _download(layer: str, path) -> None:
     raise RuntimeError(f"EFFIS layer {layer} could not be downloaded")
 
 
-def fetch(today: dt.date | None = None) -> list[dict]:
-    """Past years are downloaded once and cached, the running year is refreshed on every call."""
+def iter_years(today: dt.date | None = None) -> Iterator[list[dict]]:
     today = today or dt.date.today()
-    feats = []
     for y in range(FIRST_YEAR, today.year + 1):
         path = RAW / f"{y}.json"
         if y == today.year or not path.exists():
             _download("modis.ba.poly.season" if y == today.year else f"modis.ba.poly.{y}", path)
-        feats.extend(json.loads(path.read_text())["features"])
-    return feats
+        yield json.loads(path.read_text())["features"]
+
+
+def fetch(today: dt.date | None = None) -> list[dict]:
+    """Past years are downloaded once and cached, the running year is refreshed on every call."""
+    return [f for year in iter_years(today) for f in year]
+
+
+def fetch_normalized(today: dt.date | None = None) -> list[dict]:
+    out = []
+    for year in iter_years(today):
+        out.extend(normalize(year))
+        del year
+    return out
 
 
 def normalize(raw: list[dict]) -> list[dict]:
