@@ -80,6 +80,21 @@ def test_panel_and_features_never_look_past_the_issue_day_or_the_forecast(tmp_db
     assert (o1["wsx_t"][:, 60] == 25.0).all() and np.allclose(o1["wsx_t"][:, 59], p.W["wsx"][:, 60])
 
 
+def test_a_day_is_ranked_against_its_own_season_only():
+    """Two years of stored days: summer totals are large, winter totals are zero. A summer day's percentile must not
+    be pushed up by the winter days, and a winter day is ranked against winter alone."""
+    days = [dt.date(2023, 1, 1) + dt.timedelta(days=i) for i in range(730)]
+    doy = np.array([d.timetuple().tm_yday for d in days])
+    tot = np.where((doy > 150) & (doy < 260), np.linspace(1.0, 10.0, len(days)), 0.0)
+    h = (doy, tot)
+    summer = serve._pct(h, "2024-07-01", 3.0)
+    assert summer is not None and 0.0 < summer < 1.0
+    # a winter with no fire at all falls back to every stored day, so an unusual winter number is still ranked
+    assert serve._pct(h, "2024-02-01", 1.0) == pytest.approx(float(np.mean(tot <= 1.0)))
+    assert serve._pct((doy, np.zeros(len(days))), "2024-07-01", 1.0) is None   # a country that never sees fire
+    assert serve._pct(None, "2024-07-01", 1.0) is None
+
+
 def test_outlook_is_stored_and_served_as_country_risk(tmp_db):
     _fill()
     p = data.load()
@@ -97,8 +112,9 @@ def test_outlook_is_stored_and_served_as_country_risk(tmp_db):
         day = p.date_of(105)
         r = client.get("/api/risk", params={"date": day}).json()
         c = r["countries"][0]
-        assert r["model"] == "risk" and r["horizon"] == 7 and c["name"] == "Greece" and c["weather"] == "issued"
-        assert c["burned"] == 14 and c["expected"] == pytest.approx(float(issued[:, 105].sum()), rel=1e-4) and c["score"] > 0.5
+        assert r["model"] == "risk" and r["horizon"] == 3 and c["name"] == "Greece" and c["weather"] == "issued"
+        assert c["burned"] == 6 and c["expected"] == pytest.approx(float(issued[:, 105].sum()), rel=1e-4) and c["score"] > 0.5
+        assert c["area_km2"] > 0 and c["density"] == pytest.approx(c["expected"] / c["area_km2"] * 1000, rel=1e-6)
         early = client.get("/api/risk", params={"date": p.date_of(50)}).json()["countries"][0]
         assert early["weather"] == "perfect" and early["expected"] < c["expected"]
         late = client.get("/api/risk", params={"date": "2030-01-01"}).json()

@@ -147,8 +147,19 @@ function RealLayer({ forecast }: { forecast: Forecast | null }) {
 const riskColor = (s: number) => `hsl(${120 - 120 * Math.min(1, Math.max(0, s))}, 70%, 45%)`;
 const riskWord = (s: number) => (s >= 0.9 ? "Very high" : s >= 0.7 ? "High" : s >= 0.4 ? "Elevated" : s >= 0.15 ? "Normal" : "Low");
 
-/** Layer 0: every country coloured by its risk score, under the cell layers. */
-function CountryLayer({ regions, risk }: { regions: GeoJSON.FeatureCollection | null; risk: RiskDay | null }) {
+/** own: each country against its own season. compare: fire per surface, one scale for every country. */
+export type RiskMode = "own" | "compare";
+const DENSITY_LO = 0.01;   // expected cells per 1,000 km2 at the bottom of the compare scale
+const DENSITY_HI = 1;      // ... and at the top; the scale is logarithmic
+const riskValue = (c: CountryRisk, mode: RiskMode): number => {
+  if (mode === "own") return c.score;
+  if (!c.density || c.density <= 0) return 0;
+  const t = (Math.log10(c.density) - Math.log10(DENSITY_LO)) / (Math.log10(DENSITY_HI) - Math.log10(DENSITY_LO));
+  return Math.min(1, Math.max(0, t));
+};
+
+/** Layer 0: every country coloured by its risk, under the cell layers. */
+function CountryLayer({ regions, risk, mode }: { regions: GeoJSON.FeatureCollection | null; risk: RiskDay | null; mode: RiskMode }) {
   const map = useMap();
   useEffect(() => {
     if (!regions || !risk) return;
@@ -161,20 +172,23 @@ function CountryLayer({ regions, risk }: { regions: GeoJSON.FeatureCollection | 
       pane: "risk",
       style: (f) => {
         const c = by.get(f?.properties?.name);
-        return c ? { color: "#fff", weight: 1, fillColor: riskColor(c.score), fillOpacity: 0.55 }
+        return c ? { color: "#fff", weight: 1, fillColor: riskColor(riskValue(c, mode)), fillOpacity: 0.55 }
                  : { color: "#fff", weight: 0.5, fillColor: "#9ca3af", fillOpacity: 0.12 };
       },
       onEachFeature: (f, l) => {
         const c = by.get(f.properties?.name);
         const real = c && c.burned !== null ? `<br>Real data: ${c.burned} cells had a confirmed fire` : "";
-        l.bindTooltip(c
-          ? `<strong>${f.properties?.name}</strong>: ${riskWord(c.score)} (${Math.round(c.score * 100)}/100)<br>`
-            + `Expected fire cells: ${c.expected.toFixed(1)}${c.pct !== null ? `, more than ${Math.round(c.pct * 100)}% of its usual days` : ""}${real}`
-          : `<strong>${f.properties?.name}</strong>: no recent fire activity`, { sticky: true });
+        const v = c ? riskValue(c, mode) : 0;
+        const head = `<strong>${f.properties?.name}</strong>: ${riskWord(v)} (${Math.round(v * 100)}/100)<br>`;
+        const body = mode === "compare"
+          ? `Expected fire cells per 1,000 km²: ${c?.density != null ? c.density.toFixed(3) : "n/a"} `
+            + `(${c?.expected.toFixed(1)} cells on ${c?.area_km2 ? Math.round(c.area_km2).toLocaleString() : "?"} km²)${real}`
+          : `Expected fire cells: ${c?.expected.toFixed(1)}${c?.pct != null ? `, more than ${Math.round(c.pct * 100)}% of its usual days` : ""}${real}`;
+        l.bindTooltip(c ? head + body : `<strong>${f.properties?.name}</strong>: no recent fire activity`, { sticky: true });
       },
     }).addTo(map);
     return () => { layer.remove(); };
-  }, [map, regions, risk]);
+  }, [map, regions, risk, mode]);
   return null;
 }
 
@@ -230,6 +244,7 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   const [showModel, setShowModel] = useState(true);
   const [showReal, setShowReal] = useState(true);
   const [showCountries, setShowCountries] = useState(true);
+  const [riskMode, setRiskMode] = useState<RiskMode>("own");
   const [regions, setRegions] = useState<GeoJSON.FeatureCollection | null>(null);
   const [risk, setRisk] = useState<RiskDay | null>(null);
   const [onlyAlerts, setOnlyAlerts] = useState(false);
@@ -307,7 +322,7 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   const modelMap = (
     <MapView key="model" visible={null} tileUrl={null} incidents={[]} muted soilUrl={soilLayer} onPick={noop} onView={noop}>
       {split && <MapSync group="forecast" />}
-      {showCountries && <CountryLayer regions={regions} risk={risk} />}
+      {showCountries && <CountryLayer regions={regions} risk={risk} mode={riskMode} />}
       <ModelLayer forecast={forecast} onlyAlerts={onlyAlerts} />
     </MapView>
   );
@@ -319,7 +334,7 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   );
   const overlayMap = (
     <MapView key="overlay" visible={null} tileUrl={showReal ? realTiles : null} incidents={[]} muted soilUrl={soilLayer} onPick={noop} onView={noop}>
-      {showCountries && <CountryLayer regions={regions} risk={risk} />}
+      {showCountries && <CountryLayer regions={regions} risk={risk} mode={riskMode} />}
       {showModel && <ModelLayer forecast={forecast} onlyAlerts={onlyAlerts} />}
       {showReal && <RealLayer forecast={forecast} />}
     </MapView>
@@ -406,19 +421,34 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
         {risk && showCountries && (
           <fieldset>
             <legend>Country risk, next {risk.horizon} days</legend>
-            <div className="ramp-bar" /><div className="ramp-labels small muted"><span>OK</span><span>Really bad</span></div>
+            <label>
+              Colour countries
+              <select value={riskMode} onChange={(e) => setRiskMode(e.target.value as RiskMode)}>
+                <option value="own">Against their own season</option>
+                <option value="compare">Compared across countries</option>
+              </select>
+            </label>
+            <div className="ramp-bar" />
+            <div className="ramp-labels small muted">
+              {riskMode === "own" ? <><span>OK</span><span>Really bad</span></> : <><span>0.01 per 1,000 km²</span><span>1 per 1,000 km²</span></>}
+            </div>
             <ul className="risk-list">
-              {[...risk.countries].filter((c) => c.score >= 0.15).sort((a, b) => b.score - a.score).slice(0, 8).map((c) => (
+              {[...risk.countries].map((c) => ({ c, v: riskValue(c, riskMode) })).filter((x) => x.v >= 0.15)
+                .sort((a, b) => b.v - a.v).slice(0, 8).map(({ c, v }) => (
                 <li key={c.name}>
-                  <span className="dot" style={{ background: riskColor(c.score) }} /> {c.name}
-                  <span className="muted"> {riskWord(c.score)} · {c.expected.toFixed(1)} cells{c.burned !== null ? ` · ${c.burned} real` : ""}</span>
+                  <span className="dot" style={{ background: riskColor(v) }} /> {c.name}
+                  <span className="muted"> {riskWord(v)} · {c.expected.toFixed(1)} cells
+                    {riskMode === "compare" && c.density != null ? ` · ${c.density.toFixed(3)} per 1,000 km²` : ""}
+                    {c.burned !== null ? ` · ${c.burned} real` : ""}</span>
                 </li>
               ))}
-              {!risk.countries.some((c) => c.score >= 0.15) && <li className="muted">Every country is at normal or low risk.</li>}
+              {!risk.countries.some((c) => riskValue(c, riskMode) >= 0.15) && <li className="muted">Every country is at normal or low risk.</li>}
             </ul>
             <p className="muted small">
-              Score: the model's expected number of fire cells in the country, ranked against that country's own year.
-              Real: cells that really had a confirmed fire in the window.
+              {riskMode === "own"
+                ? "Against their own season: the model's expected fire cells in the country, ranked against the same time of year in that country's history."
+                : "Compared across countries: the expected fire cells divided by the country's surface, on one scale for every country."}
+              {" "}Real: cells that really had a confirmed fire in the window.
             </p>
           </fieldset>
         )}

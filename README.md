@@ -192,10 +192,10 @@ and the cells where a LightGBM model expects a COMMON fire (a detection inside a
 - API: `/api/model/{train,stop,resume/{id},runs,stream}`, `/api/forecast?date=`, `/api/risk?date=`, `/api/regions`,
   `/api/soil/tiles/{z}/{x}/{y}.png?cls=`.
 
-## Country fire risk, 1 to 7 days ahead (`server/risk`)
+## Country fire risk, 1 to 3 days ahead (`server/risk`)
 
 The question this model answers: **on day D, how many 0.1 degree cells of a country will burn on each of the next
-seven days**, and is that unusual for the country. It was built to test whether the Greek fires of 2025 could have
+three days** (`LEADS` in `server/risk/data.py`), and is that unusual for the country. It was built to test whether the Greek fires of 2025 could have
 been seen coming, so it is strict about time:
 
 - Trained on days up to `2024-12-31` only. Every "normal" (usual fires for the day of the year, usual temperature,
@@ -203,7 +203,7 @@ been seen coming, so it is strict about time:
 - The number of trees is picked on 2023 and 2024, held out; those held-out predictions also set each country's alert
   threshold (its 90th percentile over May to October). Nothing from the tested season tunes anything.
 - Training uses the weather that came. A replay is fed the **forecasts issued at the time**: ECMWF IFS runs made 1 to
-  7 days earlier (Open-Meteo Previous Runs API, from March 2024, `weather_issued`), mapped onto the NASA POWER
+  3 days earlier (Open-Meteo Previous Runs API, from March 2024, `weather_issued`), mapped onto the NASA POWER
   reanalysis with a per-cell line fitted on 2024.
 
 Unit: a patch, the part of a 1 degree weather cell inside one country. One LightGBM (Poisson) model per lead predicts
@@ -216,14 +216,14 @@ no fire history at all, to show what weather alone can foresee.
 ```
 uv run python -m server.risk.forecasts --country Greece --from 2025-04-01 --to 2025-10-31   # issued forecasts (resumable)
 uv run python -m server.risk.forecasts --country Greece --from 2024-04-01 --to 2024-10-31   # the year the correction is fitted on
-uv run python -m server.risk.model train        # about 30 minutes; writes data/risk/ and the country_outlook table
+uv run python -m server.risk.model train        # writes data/risk/ (each model as soon as it is fitted) and the country_outlook table
 uv run python -m server.risk.model predict      # reuse the saved models (after fetching more forecasts or new days)
 uv run python -m server.risk.report             # Greece 2025 against persistence, the usual, and the fire weather index
 uv run python -m server.risk.report --country Spain --year 2026 --target mv
 ```
 
 Once `country_outlook` is filled, `/api/risk?date=` (the country colours of the Forecast tab) answers from this model:
-expected burning cell-days over the next 7 days, ranked against the country's own stored days. Each country says
+expected burning cell-days over the next 3 days, ranked against the country's own stored days. Each country says
 whether its numbers came from issued forecasts (`weather: "issued"`) or from the weather that came (`"perfect"`,
 which flatters past days). Without it the endpoint falls back to the cell model's sums.
 

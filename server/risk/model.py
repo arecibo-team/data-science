@@ -1,4 +1,4 @@
-"""Country fire risk, 1 to 7 days ahead.
+"""Country fire risk, 1 to 3 days ahead (data.LEADS).
 
 One LightGBM model per lead k predicts, for every patch (the part of a 1 degree weather cell inside one country) and
 issue day D, the number of 0.1 degree cells that burn on day D+k. The country number is the sum over its patches.
@@ -37,6 +37,17 @@ PARAMS = {"objective": "poisson", "metric": "poisson", "learning_rate": 0.05, "n
 SETS = {"full": data.FEATURES, "conditions": data.CONDITIONS}
 
 
+MAX_ROUNDS = 1500
+
+
+def _progress(k: int, s: str):
+    """Logs the validation loss every 100 rounds, so a long fit is visibly alive."""
+    def cb(env):
+        if (env.iteration + 1) % 100 == 0:
+            log.info("lead %d %s: round %d, val poisson %.4f", k, s, env.iteration + 1, env.evaluation_result_list[0][2])
+    return cb
+
+
 def _rows(p: data.Panel, patches: np.ndarray, d0: int, d1: int, k: int, rng) -> tuple:
     """Sampled (pos, di, y, w) over issue days d0..d1 for lead k."""
     days = np.arange(d0, d1 + 1)
@@ -65,14 +76,17 @@ def fit(p: data.Panel, train_end: str = TRAIN_END, sets=("full", "conditions")) 
             t0 = time.time()
             dtr = lgb.Dataset(Xall["tr"][:, cols], tr[2], weight=tr[3], feature_name=SETS[s])
             dva = lgb.Dataset(Xall["va"][:, cols], va[2], weight=va[3], reference=dtr)
-            first = lgb.train(PARAMS, dtr, 1500, valid_sets=[dva], callbacks=[lgb.early_stopping(50, verbose=False)])
+            first = lgb.train(PARAMS, dtr, MAX_ROUNDS, valid_sets=[dva], callbacks=[lgb.early_stopping(50, verbose=False), _progress(k, s)])
             n = first.best_iteration
             X = np.concatenate([Xall["tr"][:, cols], Xall["va"][:, cols]])
             final = lgb.train(PARAMS, lgb.Dataset(X, np.concatenate([tr[2], va[2]]), weight=np.concatenate([tr[3], va[3]]),
                                                   feature_name=SETS[s]), int(n * 1.1))
             out["models"][(s, k)] = (first, final)
+            DIR.mkdir(parents=True, exist_ok=True)           # saved as soon as it is fitted, so a stopped run keeps its leads
+            final.save_model(str(DIR / f"{s}_{k}.txt"))
+            first.save_model(str(DIR / f"{s}_{k}_first.txt"))
             out["rounds"][f"{s}{k}"] = n
-            log.info("lead %d %s: %d rounds, val poisson %.4f, %ds", k, s, n, first.best_score["valid_0"]["poisson"], time.time() - t0)
+            log.info("lead %d %s done: %d rounds, val poisson %.4f, %ds", k, s, n, first.best_score["valid_0"]["poisson"], time.time() - t0)
     return out
 
 
@@ -123,9 +137,6 @@ def run(train_end: str = TRAIN_END, issued_for: str = "Greece", reuse: bool = Fa
     DIR.mkdir(parents=True, exist_ok=True)
     p = data.load()
     fitted = load_fitted(p, train_end) if reuse else fit(p, train_end)
-    for (s, k), (first, final) in fitted["models"].items():
-        final.save_model(str(DIR / f"{s}_{k}.txt"))
-        first.save_model(str(DIR / f"{s}_{k}_first.txt"))
     d0 = p.day_index(fitted["val_start"])
     perfect = predict(p, fitted, d0)
     cid = p.countries.index(issued_for)

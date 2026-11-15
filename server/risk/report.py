@@ -23,10 +23,10 @@ import numpy as np
 from scipy.stats import spearmanr
 from sklearn.metrics import roc_auc_score
 
-from . import model
+from . import data, model
 
 SEASON = (5, 10)          # May to October
-LEADS = (1, 3, 5, 7)
+LEADS = data.LEADS
 
 
 def _season(start: dt.date, n: int, years) -> np.ndarray:
@@ -101,7 +101,7 @@ def show(r: dict) -> None:
     s = r["series"]
     key = next((k for k in ("model (issued forecasts)", "model (perfect weather)") if f"{k} +1" in s), None)
     big = [i for i, v in enumerate(s["actual"]) if v >= r["surge_at"]]
-    print(f"\n  Surge days, and what the {key} said 1, 3, 5 and 7 days before (* = alert)")
+    print(f"\n  Surge days, and what the {key} said {", ".join(map(str, LEADS))} days before (* = alert)")
     for i in big:
         cells = []
         for k in LEADS:

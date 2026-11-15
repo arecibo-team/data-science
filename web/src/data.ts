@@ -266,6 +266,9 @@ export interface CountryRisk {
   active: number;
   /** Cells that really burned in the window, null while the window is not complete. */
   burned: number | null;
+  /** Expected cells per 1,000 km2 of the country's surface; absent from the older fallback. */
+  density?: number | null;
+  area_km2?: number | null;
 }
 export interface RiskDay {
   feature_date: string;

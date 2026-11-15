@@ -20,7 +20,7 @@ from .. import db
 from ..ml import regions
 from . import fwi
 
-LEADS = (1, 2, 3, 4, 5, 6, 7)
+LEADS = (1, 2, 3)        # days ahead; each lead is its own model
 MIN_DAY = 30
 NEW_GAP = 7               # a cell counts as newly burning when it had no fire in the 7 days before
 NEAR_DEG = 0.25           # a cell whose centre is in the sea belongs to the nearest country within this distance
@@ -32,7 +32,7 @@ SOIL = ["gwettop", "gwetroot"]
 class Panel:
     start: dt.date
     n_days: int                      # days with fire data
-    n_w: int                         # days in the weather arrays (n_days + 7, so the last forecasts have a target day)
+    n_w: int                         # days in the weather arrays (n_days + the longest lead, so the last forecasts have a target day)
     cell: np.ndarray                 # (P,) weather row of each patch
     cid: np.ndarray                  # (P,) country index of each patch
     lat: np.ndarray                  # (P,) fire-weighted centre of the patch
@@ -208,7 +208,7 @@ CONDITIONS = STATE + OUTLOOK + STATIC          # no fire history: weather, seaso
 
 
 def outlooks(p: Panel, nm: Normals, src: dict | None = None):
-    """For each lead k = 1..7: the weather a forecast made on day D gives for D+k, as (C, n_days) arrays indexed by D.
+    """For each lead k in LEADS: the weather a forecast made on day D gives for D+k, as (C, n_days) arrays indexed by D.
 
     src[k] holds the forecast weather of every valid day made k days earlier (the WEATHER columns, (C, n_w), indexed
     by valid day); None uses the reanalysis itself, a perfect forecast. The fire weather codes start from the
