@@ -38,6 +38,9 @@ def main(argv: list[str] | None = None) -> None:
     seed.add_argument("--sensors", default="modis,viirs")
     seed.add_argument("--from-dir", default=None)
     seed.add_argument("--if-empty", action="store_true")
+    restore = sub.add_parser("restore", help="replace data/firms.db with a published snapshot (zstd)")
+    restore.add_argument("--url", required=True)
+    restore.add_argument("--force", action="store_true")
     for sp in (serve, p):
         sp.add_argument("--host", default="127.0.0.1")
         sp.add_argument("--port", type=int, default=8000)
@@ -54,6 +57,9 @@ def main(argv: list[str] | None = None) -> None:
         from . import db, pipeline
         db.init_db()
         print("reset:", ", ".join(pipeline.reset_step(args.step, cascade=not args.only)))
+    elif args.cmd == "restore":
+        from . import imports, settings
+        print(imports.restore_snapshot(args.url, Path(settings.DB_PATH), args.force))
     elif args.cmd == "seed":
         from firms import config as C
         from . import imports

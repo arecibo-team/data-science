@@ -138,3 +138,46 @@ def seed_from_dir(folder: Path, raw_dir: Path | None = None, years: list[int] | 
         except ImportError_ as exc:
             log.warning("skipped %s: %s", path, exc)
     return {"files": files, "rows": rows}
+
+
+SNAPSHOT_MARK = ".snapshot"
+
+
+def on_snapshot(db_path: Path) -> bool:
+    return (Path(db_path).parent / SNAPSHOT_MARK).exists()
+
+
+def restore_snapshot(url: str, db_path: Path, force: bool = False) -> dict:
+    import shutil
+    import subprocess
+    db_path = Path(db_path)
+    mark = db_path.parent / SNAPSHOT_MARK
+    if mark.exists() and mark.read_text().strip() == url and db_path.exists() and not force:
+        return {"restored": False, "reason": "already restored"}
+    if not shutil.which("zstd"):
+        raise RuntimeError("zstd is not installed")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    packed = db_path.parent / "snapshot.zst.part"
+    digest = hashlib.sha256()
+    with requests.get(url, stream=True, timeout=600, headers={"User-Agent": "Mozilla/5.0"}) as r:
+        r.raise_for_status()
+        with open(packed, "wb") as f:
+            for chunk in r.iter_content(1 << 20):
+                f.write(chunk)
+                digest.update(chunk)
+    expected = None
+    try:
+        expected = requests.get(url + ".sha256", timeout=60, headers={"User-Agent": "Mozilla/5.0"}).text.split()[0]
+    except Exception:
+        log.warning("no checksum next to the snapshot, skipping the check")
+    if expected and expected != digest.hexdigest():
+        packed.unlink(missing_ok=True)
+        raise RuntimeError("snapshot checksum does not match")
+    fresh = db_path.with_suffix(".db.restore")
+    subprocess.run(["zstd", "-d", "-f", "-q", str(packed), "-o", str(fresh)], check=True)
+    packed.unlink(missing_ok=True)
+    for extra in (db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm")):
+        extra.unlink(missing_ok=True)
+    fresh.replace(db_path)
+    mark.write_text(url)
+    return {"restored": True, "bytes": db_path.stat().st_size, "sha256": digest.hexdigest()}

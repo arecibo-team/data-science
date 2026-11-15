@@ -26,6 +26,19 @@ The FIRMS server seeds itself on first start from the yearly FIRMS country archi
 `FIRMS_SEED_YEARS`, default `2024,2025`) and then runs its pipeline in the background. Heat tiles and counts appear
 after the `stats` step, about five minutes later. `docker compose logs -f firms-server` shows progress.
 
+To start from the team's full database instead (detections from 2012 to today, 107,903 incidents, the weather grid and
+the trained forecast runs), set `FIRMS_SNAPSHOT_URL` before `docker compose up`. The container downloads the snapshot
+(1.1 GB, 4 GB unpacked), checks its SHA-256 and serves it without running the pipeline:
+
+```bash
+export FIRMS_SNAPSHOT_URL=https://github.com/arecibo-team/data-science/releases/download/db-2026-11-15/firms.db.zst
+docker compose up --build -d
+# or, without Docker
+uv run python -m server restore --url "$FIRMS_SNAPSHOT_URL"
+```
+
+On a snapshot, `POST /api/import` stores and summarises the upload but does not rebuild the detections table.
+
 To run the web app on top of them, use the `arecibo` repository, which adds the frontend behind nginx and routes
 `/amber/*`, `/api/*` and `/context/*` to these three services.
 
@@ -54,7 +67,9 @@ cd apis/context && pytest test_app.py                      # Context API
 
 ## Amber API (8001)
 
-Long harmonized fire record 2001–2025 from the FIRMS country archives, the Amber index and firefighting power, the
+Long harmonized fire record 2001–2025 from the FIRMS country archives for the EU-27 and 15 neighbours (Ukraine, Moldova,
+Belarus, United Kingdom, Norway, Switzerland, Serbia, Bosnia and Herzegovina, Montenegro, Albania, Kosovo, Turkey,
+Georgia, Armenia, Azerbaijan; fire record only, they have no Amber index), the Amber index and firefighting power, the
 regional firefighter estimates, simulations and the assistance plan. Loads committed artifacts in `amber-index/artifacts`.
 
 | Endpoint | Model or data | Used in the app |
@@ -89,9 +104,10 @@ independent incidents (Copernicus EMS, EFFIS, optional Sentinel-2 burn scars). S
 | `POST /api/import` | Any FIRMS CSV into the pipeline | Data panel → Import |
 | `GET /api/weather?lat&lon&time` | Fire weather from NASA POWER or DWD ICON | Fire card in Active fires |
 | `GET /api/points` | Binary detections for a view | not used (tiles are used instead) |
-| `GET /api/forecast`, `GET /api/risk` | LightGBM cell forecast and country risk | Data panel shows whether a model is trained |
-| `POST /api/model/train`, `/api/model/runs`, `/api/model/stream` | Training jobs for the forecast | Data panel lists runs |
-| `GET /api/regions`, `/api/soil/*` | Country outlines, bare-ground layer | not used |
+| `GET /api/forecast`, `GET /api/risk` | LightGBM cell forecast (0.1°, next 3 days) and country risk against each country's own season | Forecast panel: cells, hits and misses, country table, side-by-side maps |
+| `POST /api/model/train`, `/stop`, `/resume/{id}`, `GET /api/model/runs`, `/api/model/stream` | Training jobs, live loss, held-out event replay | Forecast panel: Model, Held-out event |
+| `GET /api/soil/classes`, `/api/soil/tiles` | CORINE bare-ground layer | Data panel → Bare ground |
+| `GET /api/regions` | Country outlines | not used (the app has its own borders) |
 
 The forecast models need the `weather` step (NASA POWER on a 1° grid) before training, which takes hours on first
 run, so the Docker setup skips it. Remove `weather` and `forecast` from `PIPELINE_SKIP`, wait for the steps, then

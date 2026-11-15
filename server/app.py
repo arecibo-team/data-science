@@ -460,8 +460,9 @@ async def api_import(request: Request, name: str = Query("upload", max_length=12
         saved = imports.save_import(text, name)
     except imports.ImportError_ as exc:
         raise HTTPException(422, str(exc))
-    started = start_pipeline()
-    return {"files": saved, "rows": sum(f["rows"] for f in saved), "pipeline_started": started,
+    snapshot = imports.on_snapshot(Path(settings.DB_PATH))
+    started = False if snapshot else start_pipeline()
+    return {"files": saved, "rows": sum(f["rows"] for f in saved), "pipeline_started": started, "snapshot": snapshot,
             "pipeline_running": bool(_pipeline_thread and _pipeline_thread.is_alive())}
 
 
