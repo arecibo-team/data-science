@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 
 
 def _print_status() -> None:
@@ -32,6 +33,11 @@ def main(argv: list[str] | None = None) -> None:
     reset = sub.add_parser("reset", help="delete a step's ledger rows so it runs again")
     reset.add_argument("step")
     reset.add_argument("--only", action="store_true", help="do not also reset the steps after it")
+    seed = sub.add_parser("seed", help="fill data/raw from FIRMS country archives (no MAP_KEY needed)")
+    seed.add_argument("--years", default="2024,2025")
+    seed.add_argument("--sensors", default="modis,viirs")
+    seed.add_argument("--from-dir", default=None)
+    seed.add_argument("--if-empty", action="store_true")
     for sp in (serve, p):
         sp.add_argument("--host", default="127.0.0.1")
         sp.add_argument("--port", type=int, default=8000)
@@ -48,6 +54,17 @@ def main(argv: list[str] | None = None) -> None:
         from . import db, pipeline
         db.init_db()
         print("reset:", ", ".join(pipeline.reset_step(args.step, cascade=not args.only)))
+    elif args.cmd == "seed":
+        from firms import config as C
+        from . import imports
+        if args.if_empty and any(C.RAW_DIR.glob("*/*.csv")):
+            print("data/raw already has files, nothing to seed")
+            return
+        years = [int(y) for y in args.years.split(",") if y]
+        if args.from_dir:
+            print(imports.seed_from_dir(Path(args.from_dir), years=years))
+        else:
+            print(imports.seed_country_archives(years, tuple(s for s in args.sensors.split(",") if s)))
     else:
         import uvicorn
         uvicorn.run("server.app:app", host=args.host, port=args.port)

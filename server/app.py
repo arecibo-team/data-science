@@ -27,13 +27,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, fire_weather, pipeline, settings, soiltiles, tilegen, tiles
+from . import db, fire_weather, imports, pipeline, settings, soiltiles, tilegen, tiles
 from .risk import serve as risk_serve
 from .ml import jobs as ml_jobs, predict as ml_predict, regions as ml_regions, train as ml_train
 
@@ -438,6 +438,116 @@ def api_soil_tile(z: int, x: int, y: int, cls: int | None = Query(None, ge=0, le
 def api_soil_classes():
     from . import context
     return {"classes": context.SOIL_CLASSES, "colors": soiltiles.COLORS.astype(int).tolist()}
+
+
+MAX_IMPORT_BYTES = 300 * 1024 * 1024
+EXPORT_COLUMNS = ["latitude", "longitude", "acq_time_utc", "sensor", "platform", "product", "daynight", "confidence",
+                  "frp_mw", "brightness_k", "harmonized_status", "cluster_id", "incident_id"]
+
+
+@app.post("/api/import")
+async def api_import(request: Request, name: str = Query("upload", max_length=120)):
+    body = await request.body()
+    if not body:
+        raise HTTPException(422, "send the CSV as the request body")
+    if len(body) > MAX_IMPORT_BYTES:
+        raise HTTPException(413, "file too large, split it below 300 MB")
+    try:
+        text = body.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(422, "the file is not UTF-8 text")
+    try:
+        saved = imports.save_import(text, name)
+    except imports.ImportError_ as exc:
+        raise HTTPException(422, str(exc))
+    started = start_pipeline()
+    return {"files": saved, "rows": sum(f["rows"] for f in saved), "pipeline_started": started,
+            "pipeline_running": bool(_pipeline_thread and _pipeline_thread.is_alive())}
+
+
+@app.get("/api/sources")
+def api_sources():
+    out = []
+    for path in sorted(imports.C.RAW_DIR.glob("*/*.csv")):
+        out.append({"source": path.parent.name, "file": path.name, "bytes": path.stat().st_size,
+                    "imported": path.name.startswith("import_")})
+    by = {}
+    for f in out:
+        s = by.setdefault(f["source"], {"source": f["source"], "files": 0, "bytes": 0})
+        s["files"] += 1
+        s["bytes"] += f["bytes"]
+    return {"sources": list(by.values()), "files": len(out)}
+
+
+def _export_frame(df: pd.DataFrame) -> pd.DataFrame:
+    dec = lambda col, values: df[col].map(lambda v: values[int(v)] if v and 0 < int(v) < len(values) else "")
+    return pd.DataFrame({
+        "latitude": df["lat"].round(5), "longitude": df["lon"].round(5),
+        "acq_time_utc": pd.to_datetime(df["ts"], unit="s", utc=True).dt.strftime("%Y-%m-%dT%H:%MZ"),
+        "sensor": dec("sensor", db.SENSORS), "platform": dec("platform", db.PLATFORMS),
+        "product": dec("product", db.PRODUCTS), "daynight": dec("daynight", db.DAYNIGHT),
+        "confidence": dec("confidence", db.CONFIDENCE), "frp_mw": df["frp"].round(2), "brightness_k": df["bt"].round(2),
+        "harmonized_status": dec("status", db.STATUS),
+        "cluster_id": df["cluster_id"].astype("Int64"), "incident_id": df["incident_id"].fillna(""),
+    })[EXPORT_COLUMNS]
+
+
+@app.get("/api/export.csv")
+def api_export(q: Query_ = Depends(_params), sensor: str = Query("all", pattern="^(all|MODIS|VIIRS)$")):
+    where, args = q.WHERE, list(q.args)
+    if sensor != "all":
+        where += " AND sensor = ?"
+        args.append(db.SENSORS.index(sensor))
+
+    def rows():
+        con = db.connect(readonly=True)
+        try:
+            yield ",".join(EXPORT_COLUMNS) + "\n"
+            for chunk in pd.read_sql_query(
+                    "SELECT lat, lon, ts, sensor, platform, product, daynight, confidence, frp, bt, status, cluster_id, "
+                    f"incident_id FROM detections WHERE {where} ORDER BY ts", con, params=args, chunksize=50000):
+                yield _export_frame(chunk).to_csv(index=False, header=False)
+        finally:
+            con.close()
+
+    name = f"firms-harmonized-{q.date_from}-{q.date_to}.csv"
+    return StreamingResponse(rows(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.get("/api/summary")
+def api_summary(q: Query_ = Depends(_params)):
+    con = db.connect(readonly=True)
+    try:
+        rows = con.execute(
+            "SELECT sensor, platform, product, status, confidence, COUNT(*) n, AVG(frp) frp, MAX(frp) max_frp, "
+            f"SUM(incident_id IS NOT NULL) confirmed FROM detections WHERE {q.WHERE} "
+            "GROUP BY sensor, platform, product, status, confidence", q.args).fetchall()
+        days = con.execute(
+            f"SELECT date(ts, 'unixepoch') d, SUM(sensor=1) m, SUM(sensor=2) v, SUM(status=1) b FROM detections "
+            f"WHERE {q.WHERE} GROUP BY 1 ORDER BY 1", q.args).fetchall()
+        span = con.execute("SELECT MIN(ts), MAX(ts), COUNT(*) FROM detections").fetchone()
+    finally:
+        con.close()
+    pick = lambda values, v: values[v] if v and v < len(values) else None
+    total = sum(r["n"] for r in rows)
+    by_platform, by_status, by_conf = {}, {}, {}
+    for r in rows:
+        key = f"{pick(db.SENSORS, r['sensor'])} {pick(db.PLATFORMS, r['platform'])}"
+        by_platform[key] = by_platform.get(key, 0) + r["n"]
+        st = pick(db.STATUS, r["status"]) or "unknown"
+        by_status[st] = by_status.get(st, 0) + r["n"]
+        cf = pick(db.CONFIDENCE, r["confidence"]) or "unknown"
+        by_conf[cf] = by_conf.get(cf, 0) + r["n"]
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    as_day = lambda t: (epoch + timedelta(seconds=t)).date().isoformat() if t is not None else None
+    return {
+        "total": total, "confirmed": sum(r["confirmed"] or 0 for r in rows),
+        "mean_frp": round(sum((r["frp"] or 0) * r["n"] for r in rows) / total, 2) if total else 0,
+        "max_frp": max((r["max_frp"] or 0 for r in rows), default=0),
+        "by_platform": by_platform, "by_status": by_status, "by_confidence": by_conf,
+        "days": [{"date": d["d"], "modis": d["m"], "viirs": d["v"], "both": d["b"]} for d in days],
+        "data": {"first": as_day(span[0]), "last": as_day(span[1]), "detections": span[2]},
+    }
 
 
 if WEB_DIST.is_dir():  # after the API routes so /api wins
