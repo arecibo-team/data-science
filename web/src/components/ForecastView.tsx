@@ -158,8 +158,11 @@ const riskValue = (c: CountryRisk, mode: RiskMode): number => {
   return Math.min(1, Math.max(0, t));
 };
 
+/** Countries at war: their fires are often artificial (shelling, burning fields near the front), so they can be left out. */
+const WAR_COUNTRIES = new Set(["Ukraine", "Russia"]);
+
 /** Layer 0: every country coloured by its risk, under the cell layers. */
-function CountryLayer({ regions, risk, mode }: { regions: GeoJSON.FeatureCollection | null; risk: RiskDay | null; mode: RiskMode }) {
+function CountryLayer({ regions, risk, mode, skipWar }: { regions: GeoJSON.FeatureCollection | null; risk: RiskDay | null; mode: RiskMode; skipWar: boolean }) {
   const map = useMap();
   useEffect(() => {
     if (!regions || !risk) return;
@@ -170,6 +173,7 @@ function CountryLayer({ regions, risk, mode }: { regions: GeoJSON.FeatureCollect
     }
     const layer = L.geoJSON(regions, {
       pane: "risk",
+      filter: (f) => !(skipWar && WAR_COUNTRIES.has(f?.properties?.name)),
       style: (f) => {
         const c = by.get(f?.properties?.name);
         return c ? { color: "#fff", weight: 1, fillColor: riskColor(riskValue(c, mode)), fillOpacity: 0.55 }
@@ -188,7 +192,7 @@ function CountryLayer({ regions, risk, mode }: { regions: GeoJSON.FeatureCollect
       },
     }).addTo(map);
     return () => { layer.remove(); };
-  }, [map, regions, risk, mode]);
+  }, [map, regions, risk, mode, skipWar]);
   return null;
 }
 
@@ -245,6 +249,7 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   const [showReal, setShowReal] = useState(true);
   const [showCountries, setShowCountries] = useState(true);
   const [riskMode, setRiskMode] = useState<RiskMode>("own");
+  const [skipWar, setSkipWar] = useState(false);
   const [regions, setRegions] = useState<GeoJSON.FeatureCollection | null>(null);
   const [risk, setRisk] = useState<RiskDay | null>(null);
   const [onlyAlerts, setOnlyAlerts] = useState(false);
@@ -322,7 +327,7 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   const modelMap = (
     <MapView key="model" visible={null} tileUrl={null} incidents={[]} muted soilUrl={soilLayer} onPick={noop} onView={noop}>
       {split && <MapSync group="forecast" />}
-      {showCountries && <CountryLayer regions={regions} risk={risk} mode={riskMode} />}
+      {showCountries && <CountryLayer regions={regions} risk={risk} mode={riskMode} skipWar={skipWar} />}
       <ModelLayer forecast={forecast} onlyAlerts={onlyAlerts} />
     </MapView>
   );
@@ -334,7 +339,7 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   );
   const overlayMap = (
     <MapView key="overlay" visible={null} tileUrl={showReal ? realTiles : null} incidents={[]} muted soilUrl={soilLayer} onPick={noop} onView={noop}>
-      {showCountries && <CountryLayer regions={regions} risk={risk} mode={riskMode} />}
+      {showCountries && <CountryLayer regions={regions} risk={risk} mode={riskMode} skipWar={skipWar} />}
       {showModel && <ModelLayer forecast={forecast} onlyAlerts={onlyAlerts} />}
       {showReal && <RealLayer forecast={forecast} />}
     </MapView>
@@ -421,6 +426,9 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
         {risk && showCountries && (
           <fieldset>
             <legend>Country risk, next {risk.horizon} days</legend>
+            <label className="check">
+              <input type="checkbox" checked={skipWar} onChange={(e) => setSkipWar(e.target.checked)} /> Leave out Ukraine and Russia (war fires)
+            </label>
             <label>
               Colour countries
               <select value={riskMode} onChange={(e) => setRiskMode(e.target.value as RiskMode)}>
@@ -433,7 +441,8 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
               {riskMode === "own" ? <><span>OK</span><span>Really bad</span></> : <><span>0.01 per 1,000 km²</span><span>1 per 1,000 km²</span></>}
             </div>
             <ul className="risk-list">
-              {[...risk.countries].map((c) => ({ c, v: riskValue(c, riskMode) })).filter((x) => x.v >= 0.15)
+              {risk.countries.filter((c) => !(skipWar && WAR_COUNTRIES.has(c.name)))
+                .map((c) => ({ c, v: riskValue(c, riskMode) })).filter((x) => x.v >= 0.15)
                 .sort((a, b) => b.v - a.v).slice(0, 8).map(({ c, v }) => (
                 <li key={c.name}>
                   <span className="dot" style={{ background: riskColor(v) }} /> {c.name}
@@ -442,7 +451,7 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
                     {c.burned !== null ? ` · ${c.burned} real` : ""}</span>
                 </li>
               ))}
-              {!risk.countries.some((c) => riskValue(c, riskMode) >= 0.15) && <li className="muted">Every country is at normal or low risk.</li>}
+              {!risk.countries.some((c) => !(skipWar && WAR_COUNTRIES.has(c.name)) && riskValue(c, riskMode) >= 0.15) && <li className="muted">Every country is at normal or low risk.</li>}
             </ul>
             <p className="muted small">
               {riskMode === "own"
