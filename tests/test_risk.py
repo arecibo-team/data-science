@@ -115,7 +115,12 @@ def test_outlook_is_stored_and_served_as_country_risk(tmp_db):
         assert r["model"] == "risk" and r["horizon"] == 3 and c["name"] == "Greece" and c["weather"] == "issued"
         assert c["burned"] == 6 and c["expected"] == pytest.approx(float(issued[:, 105].sum()), rel=1e-4) and c["score"] > 0.5
         assert c["area_km2"] > 0 and c["density"] == pytest.approx(c["expected"] / c["area_km2"] * 1000, rel=1e-6)
+        assert c["real"]["expected"] == 6 and c["real"]["complete"] and c["real"]["density"] == pytest.approx(6 / c["area_km2"] * 1000)
+        assert 0.0 <= c["real"]["score"] <= 1.0
         early = client.get("/api/risk", params={"date": p.date_of(50)}).json()["countries"][0]
         assert early["weather"] == "perfect" and early["expected"] < c["expected"]
         late = client.get("/api/risk", params={"date": "2030-01-01"}).json()
         assert late["feature_date"] == p.date_of(T - 1) and not late["complete"] and late["countries"][0]["burned"] is None
+        assert late["countries"][0]["real"] is None      # no confirmed cells known for any lead of that day
+        last_days = client.get("/api/risk", params={"date": p.date_of(T - 2)}).json()["countries"][0]["real"]
+        assert last_days is not None and not last_days["complete"] and last_days["expected"] == 2     # one lead known
