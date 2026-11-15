@@ -1,110 +1,271 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { loadDay, loadIndex } from "./data";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { loadCounts, loadIncidents, loadMeta, loadPipeline, loadPoints, loadTileStatus, pointAt, tileUrl, type Counts, type Query, type TileStatus } from "./data";
 import { MapView } from "./components/MapView";
-import { Controls, type Filters } from "./components/Controls";
+import { Controls } from "./components/Controls";
+import { ForecastView } from "./components/ForecastView";
+import type { SoilState } from "./components/SoilControl";
+import { soilUrl } from "./data";
 import { SENSOR_COLOR } from "./components/PointLayer";
-import type { Index, Point } from "./types";
+import { scanPoints, type Filters, type LayerCounts } from "./model";
+import type { Bounds, IncidentFeature, IncidentProperties, Meta, PipelineStep, Point, PointsData } from "./types";
 
-const MAX_DAYS = 7;
+const PAD = 0.25; // fetch this much beyond the view on each side, so small pans need no request
+const DEBOUNCE_MS = 250;
+
+/** What the loaded data covers. Pans inside `bounds` do not trigger a request. */
+interface Loaded {
+  from: string;
+  to: string;
+  bounds: Bounds;
+  zoom: number;
+  version: number;
+}
+
+const inside = (v: Bounds, b: Bounds) => v.west >= b.west && v.east <= b.east && v.south >= b.south && v.north <= b.north;
+const area = (b: Bounds) => (b.east - b.west) * (b.north - b.south);
+
+function pad(b: Bounds): Bounds {
+  const dx = (b.east - b.west) * PAD;
+  const dy = (b.north - b.south) * PAD;
+  return {
+    west: Math.max(-180, b.west - dx),
+    east: Math.min(180, b.east + dx),
+    south: Math.max(-90, b.south - dy),
+    north: Math.min(90, b.north + dy),
+  };
+}
 
 export default function App() {
-  const [index, setIndex] = useState<Index | null>(null);
+  const [meta, setMeta] = useState<Meta | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters | null>(null);
-  const [points, setPoints] = useState<Point[]>([]);
+  const [points, setPoints] = useState<PointsData | null>(null);
+  // Set when the view holds more detections than the server sends as points: heat tiles are shown instead.
+  const [overview, setOverview] = useState<{ total: number; counts: Counts } | null>(null);
+  const [incidents, setIncidents] = useState<IncidentFeature[]>([]);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Point | null>(null);
+  const [view, setView] = useState<{ bounds: Bounds; zoom: number } | null>(null);
+  const [steps, setSteps] = useState<PipelineStep[]>([]);
+  // Bumped when the pipeline finishes a pass, so the map asks the server again.
+  const [dataVersion, setDataVersion] = useState(0);
+  const [tileStatus, setTileStatus] = useState<TileStatus | null>(null);
+  const loaded = useRef<Loaded | null>(null);
+  const [mode, setMode] = useState<"map" | "forecast">("map");
+  const [soil, setSoil] = useState<SoilState>({ on: false, cls: null });
 
-  const dates = useMemo(() => (index ? Object.keys(index.days).sort() : []), [index]);
+  const dates = useMemo(() => (meta ? Object.keys(meta.days).sort() : []), [meta]);
+  const from = filters?.from ?? "";
+  const to = filters?.to ?? "";
+
+  const refreshMeta = useCallback(
+    () =>
+      loadMeta()
+        .then((m) => {
+          setMeta(m);
+          const all = Object.keys(m.days).sort();
+          // Start on the latest three days, which is the part people open the map for.
+          if (all.length) {
+            setFilters((f) => f ?? {
+              from: all[Math.max(0, all.length - 3)],
+              to: all[all.length - 1],
+              layers: { MODIS: true, VIIRS: true, COMMON: true, INCIDENTS: true },
+              confidence: "all",
+              status: "all",
+            });
+          }
+          return m;
+        })
+        .catch((e: Error) => {
+          setError(e.message);
+          return null;
+        }),
+    [],
+  );
 
   useEffect(() => {
-    loadIndex()
-      .then((idx) => {
-        setIndex(idx);
-        const all = Object.keys(idx.days).sort();
-        if (all.length === 0) return;
-        setFilters({
-          from: all[0],
-          to: all[Math.min(2, all.length - 1)],
-          sensors: { MODIS: true, VIIRS: true },
-          confidence: "all",
-          status: "all",
+    refreshMeta();
+  }, [refreshMeta]);
+
+  // While the server runs its startup pipeline, poll it. When it finishes, reload everything.
+  const running = meta?.pipeline_running ?? false;
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => {
+      loadPipeline()
+        .then((p) => {
+          setSteps(p.steps);
+          if (!p.running) {
+            refreshMeta().then(() => setDataVersion((v) => v + 1));
+          }
+        })
+        .catch(() => undefined);
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [running, refreshMeta]);
+
+  // The server renders heat tiles in the background; follow its progress until it is done. A new data
+  // version (dataVersion) starts a new round, so polling restarts.
+  useEffect(() => {
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = () =>
+      loadTileStatus()
+        .then((s) => {
+          if (stop) return;
+          setTileStatus(s);
+          if (s.enabled && s.state !== "idle") timer = setTimeout(poll, 4000);
+        })
+        .catch(() => {
+          if (!stop) timer = setTimeout(poll, 10000);
         });
-      })
-      .catch((e: Error) => setError(e.message));
-  }, []);
-
-  // Load the days in the selected range.
-  const rangeKey = filters ? `${filters.from}|${filters.to}` : "";
-  useEffect(() => {
-    if (!filters) return;
-    const days = dates.filter((d) => d >= filters.from && d <= filters.to);
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    Promise.all(days.map(loadDay))
-      .then((parts) => {
-        if (!cancelled) setPoints(parts.flat());
-      })
-      .catch((e: Error) => !cancelled && setError(e.message))
-      .finally(() => !cancelled && setLoading(false));
+    poll();
     return () => {
-      cancelled = true;
+      stop = true;
+      clearTimeout(timer);
     };
-    // filters.from/to are captured via rangeKey; dates is stable after index loads.
-  }, [rangeKey, dates]);
+  }, [dataVersion]);
 
-  const visible = useMemo(() => {
-    if (!filters) return [];
-    return points.filter((p) => {
-      if (!filters.sensors[p.sensor]) return false;
-      if (filters.confidence === "high" && p.confidence !== "high") return false;
-      if (filters.confidence === "nominal" && p.confidence === "low") return false;
-      if (filters.confidence === "low" && p.confidence !== "low") return false;
-      if (filters.status === "both" && p.status !== "both") return false;
-      if (filters.status === "single" && p.status === "both") return false;
-      return true;
-    });
-  }, [points, filters]);
-
-  const stats = useMemo(() => {
-    const s = { total: visible.length, MODIS: 0, VIIRS: 0, matched: 0 };
-    for (const p of visible) {
-      s[p.sensor]++;
-      if (p.status === "both") s.matched++;
+  // Ask the server for what is in view. Debounced; a pan inside the loaded box asks for nothing.
+  useEffect(() => {
+    if (!meta || !filters || !view) return;
+    const prev = loaded.current;
+    const sameRange = prev && prev.from === from && prev.to === to && prev.version === dataVersion;
+    // In the overview, zooming in a lot may bring the count under the point limit: ask again.
+    const stillGood =
+      sameRange && inside(view.bounds, prev.bounds) && (overview ? area(view.bounds) > area(prev.bounds) / 3 : true);
+    if (stillGood) {
+      setLoading(false); // an earlier in-flight request was cancelled by this effect's cleanup
+      return;
     }
-    return s;
-  }, [visible]);
 
-  const onPick = useCallback((p: Point | null) => setSelected(p), []);
+    const ctl = new AbortController();
+    const timer = setTimeout(async () => {
+      const bounds = pad(view.bounds);
+      const q: Query = { from, to, ...bounds };
+      setLoading(true);
+      setError(null);
+      try {
+        const [pts, inc] = await Promise.all([loadPoints(q, ctl.signal), loadIncidents(q, ctl.signal)]);
+        // Too many to send as points: the sidebar numbers come from the server instead.
+        const counts = pts.overflow ? await loadCounts({ from, to, ...view.bounds }, ctl.signal) : null;
+        if (ctl.signal.aborted) return;
+        setPoints(pts.overflow ? null : pts);
+        setOverview(counts ? { total: pts.total, counts } : null);
+        setIncidents(inc);
+        setSelected(null);
+        loaded.current = { from, to, bounds, zoom: view.zoom, version: dataVersion };
+      } catch (e) {
+        if (!ctl.signal.aborted) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!ctl.signal.aborted) setLoading(false);
+      }
+    }, DEBOUNCE_MS);
+    return () => {
+      clearTimeout(timer);
+      ctl.abort();
+    };
+    // `overview` only decides whether a refetch is needed; it must not trigger one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meta, from, to, view, dataVersion]);
 
-  if (error && !filters) {
+  const enums = meta?.enums;
+
+  // Points: one pass over the response with all filters applied.
+  const scan = useMemo(
+    () => (filters && enums && points ? scanPoints(points, enums, filters) : null),
+    [filters, enums, points],
+  );
+
+  // Points: counted from the loaded detections. Heat overview: the server's totals for the visible box.
+  const counts: LayerCounts = useMemo(() => {
+    const c = overview?.counts ?? scan?.counts ?? { MODIS: 0, VIIRS: 0, COMMON: 0 };
+    return { MODIS: c.MODIS, VIIRS: c.VIIRS, COMMON: c.COMMON, INCIDENTS: incidents.length };
+  }, [overview, scan, incidents]);
+
+  const layerMask = filters ? (filters.layers.MODIS ? 1 : 0) | (filters.layers.VIIRS ? 2 : 0) | (filters.layers.COMMON ? 4 : 0) : 7;
+  const stats = scan
+    ? { total: scan.total, matched: scan.matched }
+    : overview
+      ? { total: overview.counts.total, matched: overview.counts.matched }
+      : null;
+  const showIncidents = filters?.layers.INCIDENTS ? incidents : [];
+
+  const incidentById = useMemo(
+    () => new Map(incidents.map((f) => [f.properties.incident_id, f.properties])),
+    [incidents],
+  );
+
+  const onView = useCallback((bounds: Bounds, zoom: number) => setView({ bounds, zoom }), []);
+
+  const onPick = useCallback(
+    (i: number | null) => {
+      if (i === null || !scan || !enums || !points) {
+        setSelected(null);
+        return;
+      }
+      setSelected(pointAt(points, scan.visible.row[i], enums));
+    },
+    [scan, points, enums],
+  );
+
+  if (error && !meta) {
     return <main className="page"><h1>FIRMS hotspots</h1><p className="error">{error}</p></main>;
   }
-  if (!filters || !index) {
-    return <main className="page"><h1>FIRMS hotspots</h1><p>Loading index…</p></main>;
+  if (!meta) {
+    return <main className="page"><h1>FIRMS hotspots</h1><p>Connecting to the server…</p></main>;
+  }
+  if (!filters) {
+    return (
+      <main className="page">
+        <h1>FIRMS hotspots</h1>
+        <p>{meta.pipeline_running ? "The server is building the database. This page updates when it is ready." : "No detections yet. Run the pipeline: python -m server run"}</p>
+        <PipelineList steps={steps} />
+      </main>
+    );
+  }
+
+  const header = (
+    <>
+      <h1>FIRMS hotspots</h1>
+      <div className="tabs" role="tablist">
+        <button type="button" role="tab" aria-selected={mode === "map"} onClick={() => setMode("map")}>Map</button>
+        <button type="button" role="tab" aria-selected={mode === "forecast"} onClick={() => setMode("forecast")}>Forecast</button>
+      </div>
+    </>
+  );
+
+  if (mode === "forecast") {
+    return <ForecastView dates={dates} generatedUtc={meta.generated_utc ?? "0"} header={header} />;
   }
 
   return (
     <div className="app">
       <aside className="sidebar">
-        <h1>FIRMS hotspots</h1>
+        {header}
         <p className="muted small">
-          MODIS (Terra/Aqua) and VIIRS (SNPP/NOAA-20/NOAA-21) active fires. Generated {index.generated_utc}.
+          MODIS (Terra/Aqua) and VIIRS (SNPP/NOAA-20/NOAA-21) active fires. Data updated {meta.generated_utc ?? "never"}.
         </p>
         <Controls
           dates={dates}
           filters={filters}
           onChange={setFilters}
+          counts={counts}
           stats={stats}
           loading={loading}
-          maxDays={MAX_DAYS}
+          overview={overview}
+          tileStatus={tileStatus}
+          pipeline={running ? steps : null}
+          soil={soil}
+          onSoil={setSoil}
         />
         {error && <p className="error">{error}</p>}
 
         <div className="legend">
           <span><span className="dot dot-modis" /> MODIS</span>
           <span><span className="dot dot-viirs" /> VIIRS</span>
+          <span><span className="dot dot-common" /> COMMON: confirmed inside an EU incident</span>
+          <span><span className="swatch" /> EU Incidents (EMS / Sentinel-2)</span>
           <span className="muted small">Marker size grows with fire radiative power (FRP).</span>
         </div>
 
@@ -122,6 +283,8 @@ export default function App() {
               <dt>Cross-sensor</dt>
               <dd>{selected.status === "both" ? `matched, cluster ${selected.cluster}` : selected.status.replace("_", " ")}</dd>
               <dt>Location</dt><dd>{selected.lat.toFixed(4)}, {selected.lon.toFixed(4)}</dd>
+              <dt>European incident</dt>
+              <dd>{selected.incident ? <IncidentInfo p={incidentById.get(selected.incident)} id={selected.incident} /> : "none (unconfirmed)"}</dd>
             </dl>
           ) : (
             <p className="muted small">Click a point on the map.</p>
@@ -130,8 +293,41 @@ export default function App() {
       </aside>
 
       <main className="map-wrap">
-        <MapView points={visible} onPick={onPick} fitKey={`${rangeKey}:${points.length}`} />
+        <MapView
+          visible={scan?.visible ?? null}
+          tileUrl={overview ? tileUrl(from, to, layerMask, meta.generated_utc ?? "0") : null}
+          incidents={showIncidents}
+          soilUrl={soil.on ? soilUrl(soil.cls) : null}
+          onPick={onPick}
+          onView={onView}
+        />
       </main>
     </div>
+  );
+}
+
+function IncidentInfo({ p, id }: { p: IncidentProperties | undefined; id: string }) {
+  if (!p) return <>{id}</>;
+  return (
+    <>
+      {p.name}
+      <br />
+      <span className="muted small">
+        {p.source} · {p.country} · {p.start_date}
+        {p.end_date !== p.start_date ? ` to ${p.end_date}` : ""}
+        {p.area_ha !== null ? ` · ${Math.round(p.area_ha).toLocaleString()} ha` : ""}
+      </span>
+    </>
+  );
+}
+
+function PipelineList({ steps }: { steps: PipelineStep[] }) {
+  if (!steps.length) return null;
+  return (
+    <ul className="muted small">
+      {steps.map((s) => (
+        <li key={s.step}>{s.title}: {s.state.replace("_", " ")}</li>
+      ))}
+    </ul>
   );
 }

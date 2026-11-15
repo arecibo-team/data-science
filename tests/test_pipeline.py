@@ -1,4 +1,4 @@
-"""Tests for planning, normalization, dedupe, cross-sensor matching and export.
+"""Tests for planning, normalization, dedupe, cross-sensor matching.
 
 Fixtures reproduce the real FIRMS CSV column layouts seen in the API.
 """
@@ -11,7 +11,6 @@ import pytest
 
 from firms import config as C
 from firms import fetch, normalize, harmonize
-from firms.export import export_web
 from firms.harmonize import MatchParams, match_cross_sensor
 
 MODIS_HEADER = "latitude,longitude,brightness,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_t31,frp,daynight"
@@ -171,31 +170,6 @@ def test_match_params_validation():
         MatchParams(radius_km=0)
     with pytest.raises(ValueError):
         MatchParams(window_min=0)
-
-
-# ---------- export ----------
-
-def test_export_writes_index_and_day_files(tmp_path):
-    df = pd.DataFrame([
-        _det("MODIS", 10.0, 20.0, "2025-08-01 10:00"),
-        _det("VIIRS", 10.0, 20.0, "2025-08-01 10:10"),
-        _det("VIIRS", 11.0, 21.0, "2025-08-02 01:00"),
-    ])
-    df["platform"] = ["Terra", "SNPP", "NOAA-21"]
-    df["bt_mid_k"] = [330.0, 340.0, np.nan]
-    df["confidence_class"] = ["high", "nominal", "low"]
-    df["daynight"] = "D"
-    df["cluster_id"] = pd.array([0, 0, None], dtype="Int64")
-    df["harmonized_status"] = ["both", "both", "viirs_only"]
-    df["uid"] = ["a", "b", "c"]
-    df["firms_version"] = "x"
-    df["source"] = "s"
-    index = export_web(df, out_dir=tmp_path)
-    assert index["days"]["2025-08-01"] == {"total": 2, "MODIS": 1, "VIIRS": 1, "matched": 2}
-    day2 = json.loads((tmp_path / "days" / "2025-08-02.json").read_text())
-    assert "bt_mid_k" in day2["fields"] and len(day2["rows"][0]) == len(day2["fields"])
-    assert day2["rows"][0][-1] is None  # unmatched cluster_id -> null
-    assert day2["rows"][0][-2] == "viirs_only"
 
 
 def _write(path, text):

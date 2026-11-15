@@ -1,20 +1,23 @@
 import L from "leaflet";
-import type { Point } from "../types";
+import type { VisibleSet } from "../model";
 
-export const SENSOR_COLOR: Record<Point["sensor"], string> = {
+export const SENSOR_COLOR = {
   MODIS: "#f97316", // orange
   VIIRS: "#2563eb", // blue
-};
+} as const;
 
-/** Marker radius in px, growing with fire radiative power (MW). */
-export function radiusFor(frp: number | null): number {
-  if (frp === null || Number.isNaN(frp)) return 2;
+const CONFIRMED_RING = "#dc2626"; // red ring: detection confirmed inside an EU incident
+
+/** Marker radius in px, growing with fire radiative power (MW). NaN means unknown. */
+export function radiusFor(frp: number): number {
+  if (Number.isNaN(frp)) return 2;
   return Math.min(7, 2 + Math.sqrt(Math.max(0, frp)) * 0.5);
 }
 
 /**
  * Draws many points on a single canvas over the map. Far faster than one Leaflet marker
- * per detection. The canvas is redrawn on move/zoom/resize; clicks pick the nearest point.
+ * per detection. The canvas is redrawn on move/zoom/resize. A click picks the nearest point
+ * and reports its index in the visible set.
  */
 export class CanvasPointLayer extends L.Layer {
   private canvas = document.createElement("canvas");
@@ -22,8 +25,8 @@ export class CanvasPointLayer extends L.Layer {
   private pending = 0;
 
   constructor(
-    private points: Point[],
-    private onPick: (p: Point | null) => void,
+    private visible: VisibleSet,
+    private onPick: (i: number | null) => void,
   ) {
     super();
     this.canvas.style.position = "absolute";
@@ -78,14 +81,22 @@ export class CanvasPointLayer extends L.Layer {
     // Only project points inside the (padded) view.
     const b = map.getBounds().pad(0.1);
     const south = b.getSouth(), north = b.getNorth(), west = b.getWest(), east = b.getEast();
+    const v = this.visible;
     ctx.globalAlpha = 0.75;
-    for (const p of this.points) {
-      if (p.lat < south || p.lat > north || p.lon < west || p.lon > east) continue;
-      const pt = map.latLngToContainerPoint([p.lat, p.lon]);
-      ctx.fillStyle = SENSOR_COLOR[p.sensor];
+    for (let i = 0; i < v.count; i++) {
+      const lat = v.lat[i], lon = v.lon[i];
+      if (lat < south || lat > north || lon < west || lon > east) continue;
+      const pt = map.latLngToContainerPoint([lat, lon]);
+      ctx.fillStyle = v.viirs[i] ? SENSOR_COLOR.VIIRS : SENSOR_COLOR.MODIS;
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, radiusFor(p.frp), 0, Math.PI * 2);
+      ctx.arc(pt.x, pt.y, radiusFor(v.frp[i]), 0, Math.PI * 2);
       ctx.fill();
+      if (v.confirmed[i]) {
+        // COMMON: confirmed inside a European incident.
+        ctx.strokeStyle = CONFIRMED_RING;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
     }
   }
 
@@ -93,15 +104,16 @@ export class CanvasPointLayer extends L.Layer {
     const map = this.mapRef;
     if (!map) return;
     const click = e.containerPoint;
-    let best: Point | null = null;
+    const v = this.visible;
+    let best: number | null = null;
     let bestD2 = 8 * 8; // pick within 8 px
-    for (const p of this.points) {
-      const pt = map.latLngToContainerPoint([p.lat, p.lon]);
+    for (let i = 0; i < v.count; i++) {
+      const pt = map.latLngToContainerPoint([v.lat[i], v.lon[i]]);
       const dx = pt.x - click.x, dy = pt.y - click.y;
       const d2 = dx * dx + dy * dy;
       if (d2 <= bestD2) {
         bestD2 = d2;
-        best = p;
+        best = i;
       }
     }
     this.onPick(best);
