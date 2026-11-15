@@ -29,7 +29,7 @@ from amber.model import load_artifacts
 from amber.power import power_index
 from amber.optimize import AssistanceParams, donor_table, haversine_km, optimize_assistance, plan_assistance
 from amber.area import AreaData, bbox_area_km2
-from amber import regions as regions_mod
+from amber import aid, regions as regions_mod
 from amber.replay import FireData, eta_hours, resources
 from amber.simulate import PRESETS, run_scenario
 from amber.scoring import amber_score, band, contributions, gap, pillar_scores, reason_text
@@ -1107,33 +1107,74 @@ def score_history(iso2: str):
                       capability=round(float(r.capability), 3)) for _, r in rows.iterrows()]
 
 
-SCENARIOS = {"wildfire_season": [("WF", "Orange", 3)], "several_hazards": PRESETS["multi_hazard"],
-             "major_flood": PRESETS["major_flood"], "earthquake": PRESETS["earthquake"], "drought": PRESETS["drought"]}
-
-
 class PlanRequest(BaseModel):
     recipient: str
     date: str | None = None
-    scenario: Literal["wildfire_season", "several_hazards", "major_flood", "earthquake", "drought"] = "wildfire_season"
-    min_power_after: float | None = Field(50.0, ge=0, le=100)
-    skip_active_fires: bool = True
+    min_power_after: float | None = Field(None, ge=0, le=100, description="Optional: donors never drop below this power")
+    keep_half: bool = Field(True, description="Donors keep half of their spare crews at home")
     fastest_first: bool = True
+    load: float = Field(1.0, ge=0.5, le=4.0, description="Multiplier on what the recipient's fires need, to test a worse day")
+
+
+class PlanFire(BaseModel):
+    id: str
+    name: str
+    lat: float
+    lon: float
+    detections: int
+    alert: str
+    need: float
+    region: str
+
+
+class PlanRegion(BaseModel):
+    region: str
+    firefighters: int
+    fires: int
+    need: int
+    capacity: int
+    local: int
+    from_country: int
+    from_abroad: int
+    sent: int
+    uncovered: int
+    pressure_before: float
+    pressure_after: float
+    power_before: float
+    power_after: float
+    anchor: list[float]
+    front: list[float]
+
+
+class PlanMove(BaseModel):
+    kind: Literal["national", "abroad"]
+    from_iso2: str
+    from_name: str
+    from_region: str | None
+    to_region: str
+    firefighters: int
+    eta_h: float
+    mode: str
+    distance_km: int
+    from_point: list[float]
+    to_point: list[float]
 
 
 class PlanDonor(BaseModel):
     iso2: str
     name: str
-    region: str | None = None
-    departure: list[float] | None = None
+    region: str | None
+    departure: list[float]
+    to_region: str
+    to_point: list[float]
     sent: int
-    water_bombers: int
-    ground_teams: int
-    resources: str
-    eta_h: float
+    teams: int
     mode: str
-    distance_km: float
+    eta_h: float
+    distance_km: int
     power_before: float
     power_after: float
+    spare: int
 
 
 class LeftOut(BaseModel):
@@ -1141,34 +1182,52 @@ class LeftOut(BaseModel):
     name: str
     reason: str
     power: float
-    power_if_sent: float | None
+    eta_h: float
 
 
-class PlanRecipient(BaseModel):
-    iso2: str
-    name: str
-    region: str | None = None
-    region_firefighters: float | None = None
-    region_share: float | None = None
-    power_before: float
-    power_after: float
-    power_with_help: float
-    crew_demand: float
-    firefighters: float
+class PlanStep(BaseModel):
+    h: float
+    label: str
+    kind: str
+    firefighters: int
+    mode: str | None = None
+    cumulative: int
+    coverage: float
 
 
 class PlanResponse(BaseModel):
     date: str
     reference_date: str
-    scenario: str
-    recipient: PlanRecipient
-    need: float
-    covered: int
-    shortfall: float
-    hours: float | None
+    status: Literal["no_fires", "local", "national", "european", "short"]
+    recipient: str
+    name: str
+    firefighters: int
+    need: int
+    sustainable: int
+    deploy_share: float
+    load: float
+    fires: list[PlanFire]
+    regions: list[PlanRegion]
+    moves: list[PlanMove]
     donors: list[PlanDonor]
     left_out: list[LeftOut]
+    timeline: list[PlanStep]
     incident: list[float]
+    incident_region: str
+    local: int
+    national: int
+    abroad_needed: int
+    abroad: int
+    shortfall: int
+    coverage_before: float
+    coverage_after: float
+    hours: float | None
+    power_reference: float
+    power_before: float
+    power_after: float
+    pressure_before: float
+    pressure_after: float
+    powers: dict[str, list[float]]
 
 
 @app.post("/plan", response_model=PlanResponse)
@@ -1179,51 +1238,13 @@ def plan(body: PlanRequest):
     d = _replay_date(body.date)
     ref = d.replace(day=1)
     before, _ = _scenario_on(ref)
-    now, fires = _scenario_on(d, {recipient: list(SCENARIOS[body.scenario])})
-    cent = pd.DataFrame(STATE["metadata"]["centroids"], index=["lat", "lon"]).T
-    own = [f for f in fires if f["iso2"] == recipient]
-    incident = (max(own, key=lambda f: f["detections"])["lat"], max(own, key=lambda f: f["detections"])["lon"]) if own \
-        else (float(cent.loc[recipient, "lat"]), float(cent.loc[recipient, "lon"]))
-    table = donor_table(now, cent)
-    depart = {i: regions_mod.departure(i, incident[0], incident[1]) for i in table.index}
-    table["lat"] = [depart[i][1] for i in table.index]
-    table["lon"] = [depart[i][2] for i in table.index]
-    dist = pd.Series(haversine_km(table["lat"], table["lon"], incident[0], incident[1]), index=table.index)
-    eta = pd.Series({i: eta_hours(i, dist[i])[0] for i in table.index})
-    with_fires = {f["iso2"] for f in fires} - {recipient}
-    rec = now.loc[recipient]
-    need = float(rec.crew_demand)
-    params = AssistanceParams(weight_location=0.8 if body.fastest_first else 0.5)
-    donors, info = plan_assistance(table, recipient, need, eta, params, body.min_power_after,
-                                   with_fires if body.skip_active_fires else None)
-    sent = donors[donors["sent"] > 0].copy()
-    sent["eta"] = [eta_hours(i, dist[i]) for i in sent.index]
-    sent = sent.assign(eta_h=[e[0] for e in sent["eta"]], mode=[e[1] for e in sent["eta"]]).sort_values("eta_h")
-    out_donors = []
-    for i, r in sent.iterrows():
-        res = resources(i, int(r.sent), r["mode"])
-        out_donors.append(PlanDonor(iso2=i, name=NAMES[i], region=depart[i][0], departure=[round(depart[i][1], 4), round(depart[i][2], 4)],
-                                    sent=int(r.sent), water_bombers=res["water_bombers"],
-                                    ground_teams=res["ground_teams"], resources=res["text"], eta_h=round(float(r.eta_h), 1),
-                                    mode=r["mode"], distance_km=round(float(dist[i]), 0), power_before=round(float(r.power), 1),
-                                    power_after=round(float(r.power_after), 1)))
-    left = donors[(donors["sent"] == 0) & (donors["reason"] != "")].copy()
-    left = left.assign(eta_h=eta.reindex(left.index)).sort_values("eta_h").head(4)
-    left_out = [LeftOut(iso2=i, name=NAMES[i], reason=r.reason, power=round(float(r.power), 1),
-                        power_if_sent=round(float(r.drop_one_team), 1) if r.reason == "would drop below" else None)
-                for i, r in left.iterrows()]
-    committed = float(rec.committed_share)
-    base = float(rec.power_after) / (1 - committed) if committed < 1 else float(rec.power_after)
-    remaining = max(0.0, need - info["covered"]) / max(float(rec.firefighters), 1.0)
-    with_help = base * (1 - min(remaining, 0.95))
-    inc_region = regions_mod.region_of(recipient, incident[0], incident[1])
-    reg_ff = regions_mod.firefighters(recipient, inc_region) if inc_region else None
-    reg_share = float(regions_mod.TABLE.loc[recipient, f"{inc_region}_share"]) if reg_ff is not None else None
-    recipient_out = PlanRecipient(iso2=recipient, name=NAMES[recipient], region=inc_region, region_firefighters=reg_ff,
-                                  region_share=round(reg_share, 4) if reg_share is not None else None, power_before=round(float(before.loc[recipient, "power_after"]), 1),
-                                  power_after=round(float(rec.power_after), 1), power_with_help=round(with_help, 1),
-                                  crew_demand=need, firefighters=round(float(rec.firefighters)))
-    return PlanResponse(date=d.isoformat(), reference_date=ref.isoformat(), scenario=body.scenario, recipient=recipient_out,
-                        need=info["need"], covered=info["covered"], shortfall=info["shortfall"],
-                        hours=max((x.eta_h for x in out_donors), default=None), donors=out_donors, left_out=left_out,
-                        incident=[round(incident[0], 4), round(incident[1], 4)])
+    now, fires = _scenario_on(d)
+    out = aid.plan(recipient, fires, now, body.min_power_after, body.fastest_first, body.load, body.keep_half)
+    sent = {x["iso2"]: x for x in out["donors"]}
+    powers = {}
+    for i, r in now.iterrows():
+        p = round(float(r.power_after), 1)
+        powers[i] = [p, sent[i]["power_after"] if i in sent else p]
+    powers[recipient] = [out["power_before"], out["power_after"]]
+    return PlanResponse(date=d.isoformat(), reference_date=ref.isoformat(), power_reference=round(float(before.loc[recipient, "power_after"]), 1),
+                        powers=powers, **out)

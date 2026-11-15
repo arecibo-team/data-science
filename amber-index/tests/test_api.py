@@ -284,16 +284,41 @@ def test_history_csv(client):
     assert r.status_code == 200 and r.text.startswith("country,year,month,harmonized_cell_days")
 
 
-def test_plan(client):
-    r = client.post("/plan", json={"recipient": "GR", "date": "2021-08-08", "scenario": "wildfire_season"})
-    assert r.status_code == 200
-    body = r.json()
-    rec = body["recipient"]
-    assert rec["power_after"] <= rec["power_before"] and rec["power_with_help"] >= rec["power_after"]
-    assert all(d["power_after"] >= 50 - 0.5 for d in body["donors"])
-    etas = [d["eta_h"] for d in body["donors"]]
-    assert etas == sorted(etas)
-    assert all(lo["iso2"] not in {d["iso2"] for d in body["donors"]} for lo in body["left_out"])
+def test_plan_cascade_balances(client):
+    p = client.post("/plan", json={"recipient": "GR", "date": "2021-08-08"}).json()
+    assert p["status"] == "european"
+    assert p["need"] == sum(f["need"] for f in p["fires"]) == sum(g["need"] for g in p["regions"])
+    assert p["local"] + p["national"] + p["abroad"] == p["need"]
+    assert p["abroad"] == p["abroad_needed"] == sum(d["sent"] for d in p["donors"]) and p["shortfall"] == 0
+    assert p["national"] == sum(g["sent"] for g in p["regions"]) == sum(g["from_country"] for g in p["regions"])
+    for g in p["regions"]:
+        assert g["local"] <= g["capacity"] and g["uncovered"] == 0
+        assert g["local"] + g["sent"] <= g["capacity"]
+        assert g["pressure_after"] <= p["deploy_share"] + 0.002
+    east = next(g for g in p["regions"] if g["region"] == "east")
+    assert east["power_after"] > east["power_before"] + 10
+    assert p["coverage_before"] < 1 and p["coverage_after"] == 1
+    assert p["timeline"][-1]["cumulative"] == p["need"]
+    assert all(d["power_after"] < d["power_before"] and d["power_after"] >= p["power_after"] for d in p["donors"])
+    assert all(p["powers"][d["iso2"]] == [d["power_before"], d["power_after"]] for d in p["donors"])
+
+
+def test_plan_without_a_gap_asks_nobody(client):
+    it = client.post("/plan", json={"recipient": "IT", "date": "2021-08-08"}).json()
+    assert it["status"] == "local" and it["donors"] == [] and it["abroad_needed"] == 0 and it["coverage_before"] == 1
+    de = client.post("/plan", json={"recipient": "DE", "date": "2021-08-08"}).json()
+    assert de["status"] == "no_fires" and de["need"] == 0 and de["moves"] == []
+
+
+def test_plan_rules(client):
+    base = {"recipient": "GR", "date": "2021-08-08", "load": 2}
+    a = client.post("/plan", json=base).json()
+    b = client.post("/plan", json={**base, "keep_half": False}).json()
+    assert a["abroad_needed"] == b["abroad_needed"] > 1000
+    assert len(a["donors"]) >= len(b["donors"])
+    c = client.post("/plan", json={**base, "min_power_after": 50}).json()
+    assert all(d["power_after"] >= 50 for d in c["donors"])
+    assert client.post("/plan", json={"recipient": "XX"}).status_code == 404
 
 
 def test_area_box_matches_range(client):
@@ -377,9 +402,9 @@ def test_regions_split_national_firefighters(client):
 
 def test_plan_reports_incident_region_and_departures(client):
     p = client.post("/plan", json={"recipient": "GR", "date": "2021-08-08"}).json()
-    assert p["recipient"]["region"] in {"north", "east", "south", "west"}
-    assert p["recipient"]["region_firefighters"] > 0
+    assert p["incident_region"] == "east"
     assert all(d["region"] and len(d["departure"]) == 2 for d in p["donors"])
+    assert all(m["from_region"] != m["to_region"] for m in p["moves"] if m["kind"] == "national")
 
 
 def test_score_history(client):

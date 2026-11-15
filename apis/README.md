@@ -70,7 +70,7 @@ regional firefighter estimates, simulations and the assistance plan. Loads commi
 | `POST /predict` | Score raw indicators for a hypothetical country-year | not used in the UI, API only |
 | `GET /simulate/presets`, `POST /simulate` | Hazard shocks on top of a replay day | Simulate panel |
 | `GET /live` | GDACS alerts of the last 14 days | **Hazards happening now** scenario |
-| `POST /plan` | Assistance MILP with regional departure points | Who can help panel and map routes |
+| `POST /plan` | Fire mutual aid in three stages (local, national, European): each unit sustains one sixth of its firefighters, donors serve their own fires first, a MILP picks the fastest arrivals | Who can help panel, animated flows on the map |
 | `POST /optimize/assistance`, `GET /live/assistance` | Older yearly optimizer | not used in the UI, API only |
 | `POST /admin/reload` | Reload artifacts | operations |
 
