@@ -1,0 +1,35 @@
+name: arecibo-apis
+
+services:
+  amber-api:
+    build: ../amber-index
+    image: arecibo/amber-api
+    ports:
+      - "8001:8001"
+    volumes:
+      - amber-data:/app/data
+
+  firms-server:
+    build:
+      context: ..
+      dockerfile: Dockerfile.server
+    image: arecibo/firms-server
+    ports:
+      - "8002:8002"
+    environment:
+      PIPELINE_SKIP: ${PIPELINE_SKIP:-fetch,sentinel2,terrain,weather,forecast}
+      FIRMS_SEED_YEARS: ${FIRMS_SEED_YEARS:-2024,2025}
+      FIRMS_EFFIS_FROM: ${FIRMS_EFFIS_FROM:-2024}
+    volumes:
+      - firms-data:/app/data
+    mem_limit: ${FIRMS_MEM_LIMIT:-6g}
+
+  context-api:
+    build: ./context
+    image: arecibo/context-api
+    ports:
+      - "8003:8003"
+
+volumes:
+  amber-data:
+  firms-data:
