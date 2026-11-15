@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: amber-api
+            context: amber-index
+            file: amber-index/Dockerfile
+          - name: firms-server
+            context: .
+            file: Dockerfile.server
+          - name: context-api
+            context: apis/context
+            file: apis/context/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f ${{ matrix.file }} -t arecibo/${{ matrix.name }}:ci ${{ matrix.context }}
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: self-hosted
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    steps:
+      - run: $HOME/arecibo/frontend/deploy/deploy.sh
