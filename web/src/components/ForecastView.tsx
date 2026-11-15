@@ -254,7 +254,6 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
   const [risk, setRisk] = useState<RiskDay | null>(null);
   const [onlyAlerts, setOnlyAlerts] = useState(false);
   const [split, setSplit] = useState(false);
-  const [realWindow, setRealWindow] = useState<"next" | "day">("next");
   const [allDetections, setAllDetections] = useState(false);
   const day = days[idx];
 
@@ -316,10 +315,10 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
     return t;
   }, [forecast]);
 
-  // The real-data heat tiles cover the days the prediction is about, or just the selected day.
+  // The real-data heat tiles and the rings cover the same days: the days the prediction is about.
   const horizon = forecast?.horizon ?? run?.params.horizon ?? 3;
-  const realFrom = realWindow === "next" ? addDays(day, 1) : day;
-  const realTo = realWindow === "next" ? addDays(day, horizon) : day;
+  const realFrom = addDays(day, 1);
+  const realTo = addDays(day, horizon);
   const realKnown = realFrom <= last;
   const realTiles = realKnown ? tileUrl(realFrom, realTo > last ? last : realTo, allDetections ? 7 : 4, generatedUtc) : null;
   const soilLayer = soil.on ? soilUrl(soil.cls) : null;
@@ -405,20 +404,13 @@ export function ForecastView({ dates, generatedUtc, header }: Props) {
           <label className="check">
             <input type="checkbox" checked={onlyAlerts} onChange={(e) => setOnlyAlerts(e.target.checked)} /> Only cells over the alert threshold
           </label>
-          <label>
-            Real data covers
-            <select value={realWindow} onChange={(e) => setRealWindow(e.target.value as "next" | "day")}>
-              <option value="next">The days the prediction is about</option>
-              <option value="day">The selected day only</option>
-            </select>
-          </label>
           <label className="check">
             <input type="checkbox" checked={allDetections} onChange={(e) => setAllDetections(e.target.checked)} /> Include unconfirmed MODIS and VIIRS detections
           </label>
           <p className="muted small">
             Model: dot colour is the predicted chance of a confirmed fire, pale at 0.1% to deep red at 100%; solid
             dots are over the alert threshold{forecast ? ` (${(forecast.threshold * 100).toFixed(0)}%)` : ""}.
-            Real data: a blue ring where a confirmed fire (inside an EU incident) really happened{realKnown ? "" : "; those days are not in the data yet"}, over the heat map of those detections.
+            Real data, over the same {horizon} days: a blue ring where a confirmed fire (inside an EU incident) really happened{realKnown ? "" : "; those days are not in the data yet"}, over the heat map of those detections.
             A ring around a solid dot is a hit; a ring alone is a miss; a solid dot alone is a false alarm.
           </p>
         </fieldset>
