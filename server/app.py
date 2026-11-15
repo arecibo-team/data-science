@@ -34,6 +34,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import db, fire_weather, pipeline, settings, soiltiles, tilegen, tiles
+from .risk import serve as risk_serve
 from .ml import jobs as ml_jobs, predict as ml_predict, regions as ml_regions, train as ml_train
 
 log = logging.getLogger("server")
@@ -404,8 +405,10 @@ def api_risk(date: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
         datetime.strptime(date, "%Y-%m-%d")
     except ValueError:
         raise HTTPException(422, "bad date")
-    run = ml_predict.latest_run()
-    out = run and ml_regions.risk(run["id"], date, run["params"]["horizon"])
+    out = risk_serve.risk(date)          # the country risk model (server/risk), when it has been run
+    if out is None:                      # otherwise the cell model's numbers summed per country
+        run = ml_predict.latest_run()
+        out = run and ml_regions.risk(run["id"], date, run["params"]["horizon"])
     if out is None:
         raise HTTPException(404, "no country risk for the newest run")
     return out

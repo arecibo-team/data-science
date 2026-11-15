@@ -141,6 +141,10 @@ def run(train_end: str = TRAIN_END, issued_for: str = "Greece", reuse: bool = Fa
         cover[k - 1] = ok
     actual = {n: np.stack([np.bincount(p.cid, a[:, t], len(p.countries)) for t in range(p.n_days)], axis=1)
               for n, a in (("b", p.B), ("mv", p.MV), ("cc", p.CC), ("new", p.NEW))}
+    from . import serve
+    te = p.day_index(train_end)
+    n = serve.store(p, perfect["full"], issued["full"][:, cid], cid, cover, actual["b"], (d0, te), d0)
+    log.info("country_outlook: %d rows", n)
     clim = np.zeros((len(p.countries), 366), np.float32)
     np.add.at(clim, p.cid, fitted["normals"].fire)
     np.savez_compressed(DIR / "outlook.npz", **{f"perfect_{s}": v for s, v in perfect.items()},

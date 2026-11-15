@@ -137,7 +137,7 @@ def load(con=None) -> Panel:
     names, _ = regions.countries()
     p = Panel(start.date(), T, n_w, pkeys // 1000, pkeys % 1000, lat.astype(np.float32), lon.astype(np.float32),
               np.bincount(pinv, minlength=P), np.column_stack([wr, wc]), B, MV, CC, NEW, nbr, W, list(names),
-              dates.month.to_numpy() - 1, dates.dayofyear.to_numpy() - 1)
+              dates.month.to_numpy() - 1, dates.day_of_year.to_numpy() - 1)
     codes(p)
     return p
 
