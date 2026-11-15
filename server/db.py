@@ -143,6 +143,20 @@ CREATE TABLE IF NOT EXISTS country_risk (
     expected REAL NOT NULL, pct REAL, active INTEGER NOT NULL, burned INTEGER NOT NULL,
     PRIMARY KEY (run_id, date, country)
 ) WITHOUT ROWID;
+-- Weather forecasts as they were issued (server/risk/forecasts.py): the value for `date` from the run made `lead`
+-- days earlier, same cells and units as weather_grid. Raw model output, bias-corrected when the features are built.
+CREATE TABLE IF NOT EXISTS weather_issued (
+    r1 INTEGER NOT NULL, c1 INTEGER NOT NULL, date TEXT NOT NULL, lead INTEGER NOT NULL,
+    t2m REAL, t2mx REAL, rh REAL, ws REAL, wsx REAL, prec REAL,
+    PRIMARY KEY (r1, c1, date, lead)
+) WITHOUT ROWID;
+-- Country risk outlook of the risk model (server/risk): what a forecast issued on `issued` expects for `date`.
+-- mode: 'issued' = fed with the forecasts of the time, 'perfect' = fed with the weather that really came.
+CREATE TABLE IF NOT EXISTS country_outlook (
+    country TEXT NOT NULL, date TEXT NOT NULL, lead INTEGER NOT NULL, mode TEXT NOT NULL,
+    issued TEXT NOT NULL, expected REAL NOT NULL, pct REAL, level INTEGER, actual INTEGER,
+    PRIMARY KEY (country, date, lead, mode)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS forecast_cache (
     run_id INTEGER NOT NULL, date TEXT NOT NULL, r INTEGER NOT NULL, c INTEGER NOT NULL, p REAL NOT NULL,
     PRIMARY KEY (run_id, date, r, c)
