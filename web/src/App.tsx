@@ -3,6 +3,7 @@ import { loadCounts, loadIncidents, loadMeta, loadPipeline, loadPoints, loadTile
 import { MapView } from "./components/MapView";
 import { Controls } from "./components/Controls";
 import { ForecastView } from "./components/ForecastView";
+import { CountryView } from "./components/CountryView";
 import type { SoilState } from "./components/SoilControl";
 import { soilUrl } from "./data";
 import { SENSOR_COLOR } from "./components/PointLayer";
@@ -51,7 +52,7 @@ export default function App() {
   const [dataVersion, setDataVersion] = useState(0);
   const [tileStatus, setTileStatus] = useState<TileStatus | null>(null);
   const loaded = useRef<Loaded | null>(null);
-  const [mode, setMode] = useState<"map" | "forecast">("map");
+  const [mode, setMode] = useState<"map" | "forecast" | "countries">("map");
   const [soil, setSoil] = useState<SoilState>({ on: false, cls: null });
 
   const dates = useMemo(() => (meta ? Object.keys(meta.days).sort() : []), [meta]);
@@ -231,12 +232,16 @@ export default function App() {
       <div className="tabs" role="tablist">
         <button type="button" role="tab" aria-selected={mode === "map"} onClick={() => setMode("map")}>Map</button>
         <button type="button" role="tab" aria-selected={mode === "forecast"} onClick={() => setMode("forecast")}>Forecast</button>
+        <button type="button" role="tab" aria-selected={mode === "countries"} onClick={() => setMode("countries")}>Countries</button>
       </div>
     </>
   );
 
   if (mode === "forecast") {
     return <ForecastView dates={dates} generatedUtc={meta.generated_utc ?? "0"} header={header} />;
+  }
+  if (mode === "countries") {
+    return <CountryView dates={dates} header={header} />;
   }
 
   return (

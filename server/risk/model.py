@@ -154,7 +154,8 @@ def run(train_end: str = TRAIN_END, issued_for: str = "Greece", reuse: bool = Fa
               for n, a in (("b", p.B), ("mv", p.MV), ("cc", p.CC), ("new", p.NEW))}
     from . import serve
     te = p.day_index(train_end)
-    n = serve.store(p, perfect["full"], issued["full"][:, cid], cid, cover, actual["b"], (d0, te), d0)
+    # the real side is the confirmed channel (cells inside a mapped incident), the same label the cell page scores against
+    n = serve.store(p, perfect["full"], issued["full"][:, cid], cid, cover, actual["cc"], (d0, te), d0)
     log.info("country_outlook: %d rows", n)
     clim = np.zeros((len(p.countries), 366), np.float32)
     np.add.at(clim, p.cid, fitted["normals"].fire)
